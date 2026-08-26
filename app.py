@@ -107,6 +107,12 @@ def background_collector() -> None:
 def signal() -> dict[str, Any] | None:
     return load_json(DATA / "signals" / "reset-forecast.json")
 
+def save_signal(value: dict[str, Any]) -> dict[str, Any]:
+    path = DATA / "signals" / "reset-forecast.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return value
+
 def velocity(window_id: str, items: list[dict[str, Any]]) -> float | None:
     values = []
     for item in items[-1000:]:
@@ -148,6 +154,37 @@ class Handler(BaseHTTPRequestHandler):
         if path.is_file() and STATIC in path.parents:
             data = path.read_bytes(); self.send_response(200); self.send_header("Content-Type", {".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"application/javascript; charset=utf-8"}.get(path.suffix, "application/octet-stream")); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         self.send_error(404)
+
+    def do_POST(self):
+        if self.path != "/api/forecast":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length))
+            if body.get("clear"):
+                path = DATA / "signals" / "reset-forecast.json"
+                try: path.unlink()
+                except FileNotFoundError: pass
+                self.json({"ok": True, "cleared": True})
+                return
+            probability = float(body.get("probability_24h"))
+            reset_at = str(body.get("forecast_reset_at", "")).strip()
+            if not 0 <= probability <= 1:
+                raise ValueError("probability_24h must be between 0 and 1")
+            if not reset_at:
+                raise ValueError("forecast_reset_at is required")
+            datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+            value = {
+                "reset_type": "global_hard_reset",
+                "probability_24h": probability,
+                "forecast_reset_at": reset_at,
+                "forecast_updated_at": iso_now(),
+                "source": "manual"
+            }
+            self.json(save_signal(value))
+        except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            self.json({"error": f"预测输入无效：{error}"}, 400)
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=5077); parser.add_argument("--collect", action="store_true"); args = parser.parse_args(); DATA.mkdir(parents=True, exist_ok=True)
