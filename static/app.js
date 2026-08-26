@@ -76,11 +76,10 @@ function renderForecast(signal, windows) {
     if (resetInput && signal.forecast_reset_at && document.activeElement !== resetInput) resetInput.value = inputDate(signal.forecast_reset_at);
     if (probabilityInput && signal.probability_24h != null && document.activeElement !== probabilityInput) probabilityInput.value = Math.round(Number(signal.probability_24h) * 100);
   }
-  if (!signal) { badge.textContent = "NO SIGNAL"; badge.className = "badge muted"; const pace = windows.length ? windows.map((w) => `${w.name}：当前 ${pct(w.remaining_percent)}，推荐保留 ${pct(w.recommended_remaining)}`).join(" · ") : "暂无额度节奏数据"; content.innerHTML = `<div class="metric-line"><span>重置状态</span><strong>按自然周期计算</strong></div><div class="metric-line"><span>推荐节奏</span><strong>${pace}</strong></div><div class="empty">等待重置预测信号；没有信号时按自然重置时间使用。</div>`; return; }
+  if (!signal) { badge.textContent = "NO SIGNAL"; badge.className = "badge muted"; content.innerHTML = `<div class="metric-line"><span>重置状态</span><strong>按自然周期计算</strong></div><div class="empty">等待重置预测信号；没有信号时按自然重置时间使用。</div>`; return; }
   const probability = Number(signal.probability_24h || 0) * 100;
   badge.textContent = `${Math.round(probability)}% / 24H`; badge.className = `badge ${probability >= 60 ? "amber-badge" : "cyan-badge"}`;
-  const pace = windows.length ? windows.map((w) => `${w.name}：当前 ${pct(w.remaining_percent)}，推荐保留 ${pct(w.recommended_remaining)}`).join(" · ") : "暂无额度节奏数据";
-  content.innerHTML = `<div class="metric-line"><span>重置类型</span><strong>${signal.reset_type === "global_hard_reset" ? "全局 Hard Reset" : signal.reset_type === "banked_reset" ? "Banked Reset" : "未明确"}</strong></div><div class="metric-line"><span>未来 24 小时概率</span><strong>${Math.round(probability)}%</strong></div><div class="metric-line"><span>预计重置时间</span><strong>${signal.forecast_reset_at ? dateText(signal.forecast_reset_at) : "—"}</strong></div><div class="metric-line"><span>推荐节奏</span><strong>${pace}</strong></div><div class="callout ${probability >= 60 ? "warn" : ""}">${probability >= 60 ? "预测信号较强，建议适度提前消耗，但保留安全底线。" : "当前没有强重置信号，按自然周期使用更稳妥。"}</div>`;
+  content.innerHTML = `<div class="metric-line"><span>重置类型</span><strong>${signal.reset_type === "global_hard_reset" ? "全局 Hard Reset" : signal.reset_type === "banked_reset" ? "Banked Reset" : "未明确"}</strong></div><div class="metric-line"><span>未来 24 小时概率</span><strong>${Math.round(probability)}%</strong></div><div class="metric-line"><span>预计重置时间</span><strong>${signal.forecast_reset_at ? dateText(signal.forecast_reset_at) : "—"}</strong></div><div class="callout ${probability >= 60 ? "warn" : ""}">${probability >= 60 ? "预测信号较强，建议适度提前消耗，但保留安全底线。" : "当前没有强重置信号，按自然周期使用更稳妥。"}</div>`;
 }
 
 function inputDate(value) {
