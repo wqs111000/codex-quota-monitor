@@ -58,14 +58,18 @@ function renderChart(history) {
     markup += `<line class="grid-line" x1="${tickX}" x2="${tickX}" y1="${top}" y2="${height - bottom}"/><text class="axis-label x-axis-label" text-anchor="middle" x="${tickX}" y="${height - 8}">${label}</text>`;
   }
   markup += `<text class="axis-label" text-anchor="end" x="${width - right}" y="${height - 24}">时间</text>`;
+  let sparse = false;
   ["primary_window", "secondary_window"].forEach((id, i) => {
     const values = [];
     points.forEach((item) => { const w = (item.windows || []).find((candidate) => candidate.id === id); if (w) values.push({time:new Date(item.captured_at).getTime(), value:Number(w.remaining_percent)}); });
     if (!values.length) return;
-    const color = i === 0 ? "cyan" : "violet", line = path(values), area = `${line} L${x(values.at(-1).time)},${y(0)} L${x(values[0].time)},${y(0)} Z`;
+    const color = i === 0 ? "cyan" : "violet";
+    if (values.length < 2) { sparse = true; markup += `<circle class="point-${color}" cx="${x(values[0].time)}" cy="${y(values[0].value)}" r="4"/>`; return; }
+    const line = path(values), area = `${line} L${x(values.at(-1).time)},${y(0)} L${x(values[0].time)},${y(0)} Z`;
     markup += `<path class="area area-${color}" d="${area}"/><path class="series series-${color}" d="${line}"/>`;
   });
   if (!points.length) markup += `<text class="axis-label" x="400" y="190">等待第一次额度采样…</text>`;
+  else if (sparse) markup += `<text class="chart-note" x="${left + 12}" y="${top + 20}">继续采样后显示变化曲线</text>`;
   svg.innerHTML = markup;
 }
 
