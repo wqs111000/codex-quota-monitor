@@ -31,7 +31,7 @@ open build/CodexQuotaMenuBar.app
 ./menubar/install.command
 ```
 
-菜单栏工具启动时会拉起本地服务；菜单栏工具正常退出时会关闭它自己启动的服务。服务异常退出时会自动重启。
+菜单栏工具启动时会拉起本地服务；菜单栏工具正常退出时会关闭它自己启动的服务。服务异常退出时会自动重启。为兼容 macOS 的后台权限，运行时副本安装在 `~/Library/Application Support/CodexQuotaMonitor`，源码仍保留在项目目录。
 
 默认数据保存在当前项目的 `data/` 下。可用环境变量切换位置：
 

@@ -6,8 +6,16 @@
     <string>com.wqs.codex-quota-menubar</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/dasheng/Documents/ChatGPT/tools/codex-quota-monitor/build/CodexQuotaMenuBar.app/Contents/MacOS/CodexQuotaMenuBar</string>
+        <string>/bin/zsh</string>
+        <string>/Users/dasheng/Library/Application Support/CodexQuotaMonitor/run.command</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CODEX_QUOTA_RUNTIME_ROOT</key>
+        <string>/Users/dasheng/Library/Application Support/CodexQuotaMonitor</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
