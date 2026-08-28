@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-        statusItem.button?.toolTip = "Codex 剩余额度"
+        statusItem.button?.toolTip = "Quota · Codex 剩余额度"
 
         menu = NSMenu()
         menu.delegate = self
@@ -87,14 +87,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem?.button else { return }
         if let primary = windows.min(by: { ($0.remainingPercent ?? 101) < ($1.remainingPercent ?? 101) }), let remaining = primary.remainingPercent {
             button.title = "\(Int(round(remaining)))%"
-            button.toolTip = "Codex · 剩余 \(Int(round(remaining)))%"
+            button.toolTip = "Quota · 剩余 \(Int(round(remaining)))%"
         } else {
             button.title = "—"
         }
 
         menu?.removeAllItems()
-        let header = NSMenuItem(title: "CODEX QUOTA", action: nil, keyEquivalent: "")
-        header.attributedTitle = NSAttributedString(string: "CODEX QUOTA", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: NSColor.secondaryLabelColor])
+        let header = NSMenuItem(title: "QUOTA", action: nil, keyEquivalent: "")
+        header.attributedTitle = NSAttributedString(string: "QUOTA", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: NSColor.secondaryLabelColor])
         menu.addItem(header)
         menu.addItem(.separator())
 
@@ -121,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r"))
         menu.addItem(NSMenuItem(title: "打开额度仪表盘", action: #selector(openDashboard), keyEquivalent: "o"))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出额度监控", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "退出 Quota", action: #selector(quit), keyEquivalent: "q"))
     }
 
     private func formatDuration(_ hours: Double) -> String {

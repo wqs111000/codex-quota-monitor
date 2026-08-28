@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${CODEX_QUOTA_RUNTIME_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 PYTHON="/opt/homebrew/bin/python3"
-APP="$ROOT/CodexQuotaMenuBar.app/Contents/MacOS/CodexQuotaMenuBar"
+APP="$ROOT/Quota.app/Contents/MacOS/Quota"
 
 "$PYTHON" "$ROOT/app.py" >/tmp/codex-quota-service.log 2>&1 &
 SERVICE_PID=$!

@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.wqs.codex-quota-menubar</string>
+    <string>com.wqs.quota</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
-        <string>/Users/dasheng/Library/Application Support/CodexQuotaMonitor/run.command</string>
+        <string>/Users/dasheng/Library/Application Support/Quota/run.command</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>CODEX_QUOTA_RUNTIME_ROOT</key>
-        <string>/Users/dasheng/Library/Application Support/CodexQuotaMonitor</string>
+        <string>/Users/dasheng/Library/Application Support/Quota</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/bin:/bin</string>
     </dict>
@@ -26,8 +26,8 @@
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
-    <string>/tmp/codex-quota-menubar.log</string>
+    <string>/tmp/quota.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/codex-quota-menubar.error.log</string>
+    <string>/tmp/quota.error.log</string>
 </dict>
 </plist>
