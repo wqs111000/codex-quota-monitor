@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var windows: [QuotaWindow] = []
     private var lastSync: Date?
     private var timer: Timer?
+    private var ownedService: Process?
     private let endpoint = URL(string: "http://127.0.0.1:5077/api/status")!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         refreshMenu()
-        fetchQuota()
+        ensureService { [weak self] in self?.fetchQuota() }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.fetchQuota()
         }
@@ -56,7 +57,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        if let ownedService, ownedService.isRunning { ownedService.terminate() }
         NSApp.terminate(nil)
+    }
+
+    private func ensureService(completion: @escaping () -> Void) {
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 0.8
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                self?.startOwnedService(completion: completion)
+                return
+            }
+            DispatchQueue.main.async { completion() }
+        }.resume()
+    }
+
+    private func startOwnedService(completion: @escaping () -> Void) {
+        let fileManager = FileManager.default
+        let bundleRoot = URL(fileURLWithPath: Bundle.main.bundlePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let candidates = [
+            ProcessInfo.processInfo.environment["CODEX_QUOTA_RUNTIME_ROOT"].map(URL.init(fileURLWithPath:)),
+            bundleRoot,
+            bundleRoot.deletingLastPathComponent()
+        ].compactMap { $0 }
+        guard let root = candidates.first(where: { fileManager.fileExists(atPath: $0.appendingPathComponent("app.py").path) }) else {
+            DispatchQueue.main.async { completion() }
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/python3")
+        process.arguments = [root.appendingPathComponent("app.py").path]
+        process.currentDirectoryURL = root
+        process.environment = ProcessInfo.processInfo.environment.merging(["CODEX_QUOTA_RUNTIME_ROOT": root.path]) { _, new in new }
+        do {
+            try process.run()
+            ownedService = process
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { completion() }
+        } catch {
+            DispatchQueue.main.async { completion() }
+        }
     }
 
     private func fetchQuota() {
