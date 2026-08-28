@@ -1,4 +1,4 @@
-const state = { data: null, rangeHours: 24 };
+const state = { data: null, rangeHours: 24, chartEndMs: null, chartDragging: false, dragStartX: 0, dragStartEndMs: 0 };
 const $ = (s) => document.querySelector(s);
 const pct = (v, digits = 1) => v == null || Number.isNaN(Number(v)) ? "—" : `${Number(v).toFixed(digits)}%`;
 const dateText = (v) => v ? new Date(v).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "—";
@@ -45,14 +45,14 @@ function renderCards(windows) {
 }
 
 function renderChart(history) {
-  const svg = $("#chart"), cutoff = Date.now() - state.rangeHours * 3600 * 1000;
-  const points = history.filter((item) => new Date(item.captured_at).getTime() >= cutoff), width = 1000, height = 390, left = 48, right = 18, top = 22, bottom = 32, plotW = width - left - right, plotH = height - top - bottom;
-  const x = (t) => left + ((t - cutoff) / (state.rangeHours * 3600 * 1000)) * plotW, y = (v) => top + (100 - Math.max(0, Math.min(100, v))) / 100 * plotH;
+  const svg = $("#chart"), chartEnd = state.chartEndMs || Date.now(), rangeMs = state.rangeHours * 3600 * 1000, cutoff = chartEnd - rangeMs;
+  const points = history.filter((item) => { const time = new Date(item.captured_at).getTime(); return time >= cutoff && time <= chartEnd; }), width = 1000, height = 390, left = 48, right = 18, top = 22, bottom = 32, plotW = width - left - right, plotH = height - top - bottom;
+  const x = (t) => left + ((t - cutoff) / rangeMs) * plotW, y = (v) => top + (100 - Math.max(0, Math.min(100, v))) / 100 * plotH;
   const path = (values) => values.map((p, i) => `${i ? "L" : "M"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   let markup = `<defs><linearGradient id="cyanFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#56e0e6"/><stop offset="1" stop-color="#56e0e6" stop-opacity="0"/></linearGradient><linearGradient id="violetFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9d8cff"/><stop offset="1" stop-color="#9d8cff" stop-opacity="0"/></linearGradient></defs>`;
   [0, 25, 50, 75, 100].forEach((v) => { markup += `<line class="grid-line" x1="${left}" x2="${width - right}" y1="${y(v)}" y2="${y(v)}"/><text class="axis-label" x="8" y="${y(v) + 4}">${v}%</text>`; });
   for (let i = 0; i <= 4; i += 1) {
-    const tick = cutoff + (state.rangeHours * 3600 * 1000 * i / 4);
+    const tick = cutoff + (rangeMs * i / 4);
     const label = new Date(tick).toLocaleString("zh-CN", state.rangeHours <= 24 ? {hour:"2-digit", minute:"2-digit"} : {month:"numeric", day:"numeric"});
     const tickX = left + plotW * i / 4;
     markup += `<line class="grid-line" x1="${tickX}" x2="${tickX}" y1="${top}" y2="${height - bottom}"/><text class="axis-label x-axis-label" text-anchor="middle" x="${tickX}" y="${height - 8}">${label}</text>`;
@@ -70,7 +70,36 @@ function renderChart(history) {
   });
   if (!points.length) markup += `<text class="axis-label" x="400" y="190">等待第一次额度采样…</text>`;
   else if (sparse) markup += `<text class="chart-note" x="${left + 12}" y="${top + 20}">继续采样后显示变化曲线</text>`;
+  markup += `<line id="chart-hover-guide" class="chart-hover-guide" x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" visibility="hidden"/><circle id="chart-hover-primary" class="chart-hover-point point-cyan" r="5" visibility="hidden"/><circle id="chart-hover-secondary" class="chart-hover-point point-violet" r="5" visibility="hidden"/>`;
   svg.innerHTML = markup;
+  bindChartInteraction({svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y});
+}
+
+function bindChartInteraction(chart) {
+  const {svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y} = chart;
+  const tooltip = $("#chart-tooltip");
+  const valuesFor = (id) => history.flatMap((item) => (item.windows || []).filter((w) => w.id === id).map((w) => ({time:new Date(item.captured_at).getTime(), value:Number(w.remaining_percent)}))).filter((p) => p.time >= cutoff && p.time <= chartEnd);
+  const series = [{id:"primary_window", label:"5 小时", marker:"#chart-hover-primary", dot:"cyan", values:valuesFor("primary_window")}, {id:"secondary_window", label:"周期额度", marker:"#chart-hover-secondary", dot:"violet", values:valuesFor("secondary_window")}].filter((item) => item.values.length);
+  const localX = (event) => { const rect = svg.getBoundingClientRect(); return Math.max(left, Math.min(width - 18, (event.clientX - rect.left) / rect.width * width)); };
+  const nearest = (values, time) => values.reduce((best, item) => Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, values[0]);
+  const hideTooltip = () => { tooltip.classList.remove("visible"); ["#chart-hover-guide", "#chart-hover-primary", "#chart-hover-secondary"].forEach((selector) => { const node = svg.querySelector(selector); if (node) node.setAttribute("visibility", "hidden"); }); };
+  const showTooltip = (event) => {
+    if (state.chartDragging || !series.length) return;
+    const cursorX = localX(event), time = cutoff + ((cursorX - left) / plotW) * rangeMs;
+    const selected = series.map((item) => ({...item, point:nearest(item.values, time)}));
+    const guide = svg.querySelector("#chart-hover-guide"); guide.setAttribute("x1", cursorX); guide.setAttribute("x2", cursorX); guide.setAttribute("visibility", "visible");
+    selected.forEach((item) => { const marker = svg.querySelector(item.marker); marker.setAttribute("cx", x(item.point.time)); marker.setAttribute("cy", y(item.point.value)); marker.setAttribute("visibility", "visible"); });
+    tooltip.innerHTML = `<strong>${new Date(time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})}</strong>${selected.map((item) => `<span><i class="legend-dot ${item.dot}"></i>${item.label} <b>${Math.round(item.point.value)}%</b></span>`).join("")}`;
+    const wrap = $(".chart-wrap"), rect = wrap.getBoundingClientRect(); tooltip.style.left = `${Math.min(Math.max(event.clientX - rect.left + 14, 8), rect.width - tooltip.offsetWidth - 8)}px`; tooltip.style.top = `${Math.max(event.clientY - rect.top - tooltip.offsetHeight - 12, 8)}px`; tooltip.classList.add("visible");
+  };
+  svg.onpointermove = (event) => {
+    if (state.chartDragging) { const currentX = localX(event), deltaMs = ((state.dragStartX - currentX) / plotW) * rangeMs; state.chartEndMs = state.dragStartEndMs + deltaMs; svg.classList.add("dragging"); return; }
+    showTooltip(event);
+  };
+  svg.onpointerdown = (event) => { state.chartDragging = true; state.dragStartX = localX(event); state.dragStartEndMs = chartEnd; svg.setPointerCapture(event.pointerId); hideTooltip(); };
+  svg.onpointerup = (event) => { state.chartDragging = false; svg.releasePointerCapture(event.pointerId); svg.classList.remove("dragging"); renderChart(state.data?.history || []); };
+  svg.onpointercancel = () => { state.chartDragging = false; svg.classList.remove("dragging"); renderChart(state.data?.history || []); };
+  svg.onpointerleave = () => { if (!state.chartDragging) hideTooltip(); };
 }
 
 function renderForecast(signal, windows) {
@@ -115,7 +144,7 @@ $("#clear-forecast").addEventListener("click", clearForecast);
 document.querySelectorAll("[data-range]").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll("[data-range]").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); renderChart(state.data?.history || []);
+    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); state.chartEndMs = null; renderChart(state.data?.history || []);
   });
 });
 load(); setInterval(() => load(), 60000);
