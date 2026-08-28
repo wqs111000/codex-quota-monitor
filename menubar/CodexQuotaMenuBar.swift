@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var windows: [QuotaWindow] = []
     private var lastSync: Date?
     private var timer: Timer?
+    private var serviceProcess: Process?
+    private var ownsService = false
+    private var isQuitting = false
     private let endpoint = URL(string: "http://127.0.0.1:5077/api/status")!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         refreshMenu()
+        ensureService()
         fetchQuota()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.fetchQuota()
@@ -56,7 +60,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        isQuitting = true
+        stopService()
         NSApp.terminate(nil)
+    }
+
+    private var projectRoot: URL {
+        URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func ensureService() {
+        URLSession.shared.dataTask(with: endpoint) { [weak self] _, response, _ in
+            guard let self else { return }
+            guard !(response is HTTPURLResponse) else { return }
+            DispatchQueue.main.async { self.startService() }
+        }.resume()
+    }
+
+    private func startService() {
+        guard serviceProcess == nil else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", projectRoot.appendingPathComponent("app.py").path]
+        process.currentDirectoryURL = projectRoot
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.serviceProcess = nil
+                self.ownsService = false
+                if !self.isQuitting {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.ensureService() }
+                }
+            }
+        }
+        do {
+            try process.run()
+            serviceProcess = process
+            ownsService = true
+        } catch {
+            serviceProcess = nil
+        }
+    }
+
+    private func stopService() {
+        guard ownsService, let process = serviceProcess, process.isRunning else { return }
+        process.terminate()
+        serviceProcess = nil
+        ownsService = false
     }
 
     private func fetchQuota() {
