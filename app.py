@@ -187,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"error": f"预测输入无效：{error}"}, 400)
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=5077); parser.add_argument("--collect", action="store_true"); args = parser.parse_args(); DATA.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(); parser.add_argument("--host", default="0.0.0.0"); parser.add_argument("--port", type=int, default=5077); parser.add_argument("--collect", action="store_true"); args = parser.parse_args(); DATA.mkdir(parents=True, exist_ok=True)
     if args.collect: print(json.dumps(collect(True), ensure_ascii=False, indent=2)); return
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"ChatGPT quota monitor: http://{args.host}:{args.port}", flush=True)
