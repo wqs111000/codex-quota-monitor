@@ -14,6 +14,9 @@ DATA = Path(os.environ.get("CHATGPT_QUOTA_DATA_DIR", ROOT / "data"))
 DEVICE = os.environ.get("CHATGPT_QUOTA_DEVICE", "this-mac")
 POLL_SECONDS = int(os.environ.get("CHATGPT_QUOTA_POLL_SECONDS", "300"))
 last_collect = 0.0
+last_attempt_at: str | None = None
+last_success_at: str | None = None
+last_error: str | None = None
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -44,6 +47,7 @@ def unix_iso(value: Any) -> str | None:
     return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds") if isinstance(value, (int, float)) else None
 
 def window_name(seconds: int) -> str:
+    if seconds <= 0: return "额度窗口"
     return {18000: "5小时", 604800: "7天", 2592000: "30天"}.get(seconds, f"{seconds // 3600}小时")
 
 def query() -> dict[str, Any]:
@@ -60,8 +64,7 @@ def query() -> dict[str, Any]:
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         return {"ok": False, "captured_at": iso_now(), "error": "额度接口暂时不可用，请稍后重试。"}
     windows = []
-    for key in ("primary_window", "secondary_window"):
-        w = (body.get("rate_limit") or {}).get(key)
+    for key, w in (body.get("rate_limit") or {}).items():
         if not isinstance(w, dict) or w.get("used_percent") is None: continue
         used, seconds = float(w["used_percent"]), int(w.get("limit_window_seconds") or 0)
         windows.append({"id": key, "name": window_name(seconds), "used_percent": round(used, 3), "remaining_percent": round(max(0, 100 - used), 3), "limit_window_seconds": seconds, "reset_at": unix_iso(w.get("reset_at"))})
@@ -91,10 +94,16 @@ def latest() -> dict[str, Any] | None:
     items = history(); return items[-1] if items else None
 
 def collect(force=False) -> dict[str, Any]:
-    global last_collect
+    global last_collect, last_attempt_at, last_success_at, last_error
     if not force and time.time() - last_collect < POLL_SECONDS: return latest() or {"ok": False, "error": "等待下一次采样。"}
+    last_attempt_at = iso_now()
     item = query(); last_collect = time.time()
-    if item.get("ok"): append(item)
+    if item.get("ok"):
+        last_success_at = item.get("captured_at")
+        last_error = None
+        append(item)
+    else:
+        last_error = item.get("error", "额度采样失败")
     return item
 
 def background_collector() -> None:
@@ -141,7 +150,9 @@ def metrics(w: dict[str, Any], items: list[dict[str, Any]], forecast: dict[str, 
 
 def payload() -> dict[str, Any]:
     items, last, fc = history(), latest(), signal(); windows = [metrics(w, items, fc) for w in (last or {}).get("windows", [])]
-    return {"latest": last, "windows": windows, "history": items, "forecast": fc, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS}
+    last_good = last.get("captured_at") if last else None
+    stale = bool(last_good and (datetime.now(timezone.utc) - datetime.fromisoformat(last_good)).total_seconds() > POLL_SECONDS * 2.5)
+    return {"latest": last, "windows": windows, "history": items, "forecast": fc, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass

@@ -27,9 +27,10 @@ function notice(message, warning) {
 function render() {
   const d = state.data || {}, latest = d.latest, windows = d.windows || [];
   if (!latest) notice("还没有额度采样。点击右上角 ↻ 立即读取 Codex OAuth 额度。", false);
-  else if (!latest.ok) notice(latest.error || "最近一次采样失败。", true);
+  else if (d.collector?.last_error) notice(`最近一次采样失败：${d.collector.last_error}，当前显示最近一次成功采样。`, true);
+  else if (d.collector?.stale) notice("当前额度数据已过期，正在等待新的采样。", true);
   else $("#notice").classList.add("hidden");
-  $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}` : "WAITING FOR SIGNAL";
+  $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}${d.collector?.stale ? " · STALE" : ""}` : "WAITING FOR SIGNAL";
   $("#data-location").textContent = d.data_dir || "";
   renderCards(windows); renderChart(d.history || [], windows); renderForecast(d.forecast, windows);
 }
@@ -86,12 +87,17 @@ function bindChartInteraction(chart) {
   const valuesFor = (id) => history.flatMap((item) => (item.windows || []).filter((w) => w.id === id).map((w) => ({time:new Date(item.captured_at).getTime(), value:Number(w.remaining_percent)}))).filter((p) => p.time >= cutoff && p.time <= chartEnd);
   const series = seriesMeta.map((item) => ({...item, dot:item.color, values:valuesFor(item.id)})).filter((item) => item.values.length);
   const localX = (event) => { const rect = svg.getBoundingClientRect(); return Math.max(left, Math.min(width - 18, (event.clientX - rect.left) / rect.width * width)); };
-  const nearest = (values, time) => values.reduce((best, item) => Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, values[0]);
+  const valueAt = (values, time) => {
+    if (values.length === 1 || time <= values[0].time) return {...values[0], time};
+    if (time >= values.at(-1).time) return {...values.at(-1), time};
+    const rightIndex = values.findIndex((item) => item.time >= time), right = values[rightIndex], leftPoint = values[rightIndex - 1], ratio = (time - leftPoint.time) / (right.time - leftPoint.time);
+    return {time, value:leftPoint.value + (right.value - leftPoint.value) * ratio};
+  };
   const hideTooltip = () => { tooltip.classList.remove("visible"); ["#chart-hover-guide", ...seriesMeta.map((item) => item.marker)].forEach((selector) => { const node = svg.querySelector(selector); if (node) node.setAttribute("visibility", "hidden"); }); };
   const showTooltip = (event, allowDuringPointerDown = false) => {
     if ((state.chartDragging || (state.chartPointerDown && !allowDuringPointerDown)) || !series.length) return;
     const cursorX = localX(event), time = cutoff + ((cursorX - left) / plotW) * rangeMs;
-    const selected = series.map((item) => ({...item, point:nearest(item.values, time)}));
+    const selected = series.map((item) => ({...item, point:valueAt(item.values, time)}));
     const guide = svg.querySelector("#chart-hover-guide"); guide.setAttribute("x1", cursorX); guide.setAttribute("x2", cursorX); guide.setAttribute("visibility", "visible");
     selected.forEach((item) => { const marker = svg.querySelector(item.marker); marker.setAttribute("cx", x(item.point.time)); marker.setAttribute("cy", y(item.point.value)); marker.setAttribute("visibility", "visible"); });
     tooltip.innerHTML = `<strong>${new Date(time).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})}</strong>${selected.map((item) => `<span><i class="legend-dot ${item.dot}"></i>${item.label} <b>${Math.round(item.point.value)}%</b></span>`).join("")}`;
