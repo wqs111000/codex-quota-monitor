@@ -31,7 +31,7 @@ function render() {
   else $("#notice").classList.add("hidden");
   $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}` : "WAITING FOR SIGNAL";
   $("#data-location").textContent = d.data_dir || "";
-  renderCards(windows); renderChart(d.history || []); renderForecast(d.forecast, windows);
+  renderCards(windows); renderChart(d.history || [], windows); renderForecast(d.forecast, windows);
 }
 
 function renderCards(windows) {
@@ -44,9 +44,13 @@ function renderCards(windows) {
   }).join("");
 }
 
-function renderChart(history) {
+function renderChart(history, windows = []) {
   const svg = $("#chart"), chartEnd = state.chartEndMs || Date.now(), rangeMs = state.rangeHours * 3600 * 1000, cutoff = chartEnd - rangeMs;
   const points = history.filter((item) => { const time = new Date(item.captured_at).getTime(); return time >= cutoff && time <= chartEnd; }), width = 1000, height = 390, left = 48, right = 18, top = 22, bottom = 32, plotW = width - left - right, plotH = height - top - bottom;
+  const sourceWindows = windows.length ? windows : (points.at(-1)?.windows || []);
+  const seriesMeta = sourceWindows.map((window, index) => ({id:window.id, label:window.name || "额度窗口", color:index % 2 ? "violet" : "cyan", marker:`#chart-hover-${index}`}));
+  const legend = $("#chart-legend");
+  if (legend) legend.innerHTML = seriesMeta.map((item) => `<span><i class="legend-dot ${item.color}"></i>${item.label}</span>`).join("");
   const x = (t) => left + ((t - cutoff) / rangeMs) * plotW, y = (v) => top + (100 - Math.max(0, Math.min(100, v))) / 100 * plotH;
   const path = (values) => values.map((p, i) => `${i ? "L" : "M"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   let markup = `<defs><linearGradient id="cyanFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#56e0e6"/><stop offset="1" stop-color="#56e0e6" stop-opacity="0"/></linearGradient><linearGradient id="violetFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9d8cff"/><stop offset="1" stop-color="#9d8cff" stop-opacity="0"/></linearGradient></defs>`;
@@ -59,30 +63,31 @@ function renderChart(history) {
   }
   markup += `<text class="axis-label" text-anchor="end" x="${width - right}" y="${height - 24}">时间</text>`;
   let sparse = false;
-  ["primary_window", "secondary_window"].forEach((id, i) => {
+  seriesMeta.forEach((item) => {
+    const {id} = item;
     const values = [];
     points.forEach((item) => { const w = (item.windows || []).find((candidate) => candidate.id === id); if (w) values.push({time:new Date(item.captured_at).getTime(), value:Number(w.remaining_percent)}); });
     if (!values.length) return;
-    const color = i === 0 ? "cyan" : "violet";
+    const color = item.color;
     if (values.length < 2) { sparse = true; markup += `<circle class="point-${color}" cx="${x(values[0].time)}" cy="${y(values[0].value)}" r="4"/>`; return; }
     const line = path(values), area = `${line} L${x(values.at(-1).time)},${y(0)} L${x(values[0].time)},${y(0)} Z`;
     markup += `<path class="area area-${color}" d="${area}"/><path class="series series-${color}" d="${line}"/>`;
   });
   if (!points.length) markup += `<text class="axis-label" x="400" y="190">等待第一次额度采样…</text>`;
   else if (sparse) markup += `<text class="chart-note" x="${left + 12}" y="${top + 20}">继续采样后显示变化曲线</text>`;
-  markup += `<line id="chart-hover-guide" class="chart-hover-guide" x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" visibility="hidden"/><circle id="chart-hover-primary" class="chart-hover-point point-cyan" r="5" visibility="hidden"/><circle id="chart-hover-secondary" class="chart-hover-point point-violet" r="5" visibility="hidden"/>`;
+  markup += `<line id="chart-hover-guide" class="chart-hover-guide" x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" visibility="hidden"/>${seriesMeta.map((item) => `<circle id="${item.marker.slice(1)}" class="chart-hover-point point-${item.color}" r="5" visibility="hidden"/>`).join("")}`;
   svg.innerHTML = markup;
-  bindChartInteraction({svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y});
+  bindChartInteraction({svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y, seriesMeta});
 }
 
 function bindChartInteraction(chart) {
-  const {svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y} = chart;
+  const {svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y, seriesMeta} = chart;
   const tooltip = $("#chart-tooltip");
   const valuesFor = (id) => history.flatMap((item) => (item.windows || []).filter((w) => w.id === id).map((w) => ({time:new Date(item.captured_at).getTime(), value:Number(w.remaining_percent)}))).filter((p) => p.time >= cutoff && p.time <= chartEnd);
-  const series = [{id:"primary_window", label:"5 小时", marker:"#chart-hover-primary", dot:"cyan", values:valuesFor("primary_window")}, {id:"secondary_window", label:"周期额度", marker:"#chart-hover-secondary", dot:"violet", values:valuesFor("secondary_window")}].filter((item) => item.values.length);
+  const series = seriesMeta.map((item) => ({...item, dot:item.color, values:valuesFor(item.id)})).filter((item) => item.values.length);
   const localX = (event) => { const rect = svg.getBoundingClientRect(); return Math.max(left, Math.min(width - 18, (event.clientX - rect.left) / rect.width * width)); };
   const nearest = (values, time) => values.reduce((best, item) => Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, values[0]);
-  const hideTooltip = () => { tooltip.classList.remove("visible"); ["#chart-hover-guide", "#chart-hover-primary", "#chart-hover-secondary"].forEach((selector) => { const node = svg.querySelector(selector); if (node) node.setAttribute("visibility", "hidden"); }); };
+  const hideTooltip = () => { tooltip.classList.remove("visible"); ["#chart-hover-guide", ...seriesMeta.map((item) => item.marker)].forEach((selector) => { const node = svg.querySelector(selector); if (node) node.setAttribute("visibility", "hidden"); }); };
   const showTooltip = (event, allowDuringPointerDown = false) => {
     if ((state.chartDragging || (state.chartPointerDown && !allowDuringPointerDown)) || !series.length) return;
     const cursorX = localX(event), time = cutoff + ((cursorX - left) / plotW) * rangeMs;
@@ -146,7 +151,7 @@ $("#clear-forecast").addEventListener("click", clearForecast);
 document.querySelectorAll("[data-range]").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll("[data-range]").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); state.chartEndMs = null; renderChart(state.data?.history || []);
+    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); state.chartEndMs = null; renderChart(state.data?.history || [], state.data?.windows || []);
   });
 });
 load(); setInterval(() => load(), 60000);
