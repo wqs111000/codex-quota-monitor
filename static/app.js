@@ -75,7 +75,7 @@ function renderChart(history, windows = []) {
   });
   if (!points.length) markup += `<text class="axis-label" x="400" y="190">等待第一次额度采样…</text>`;
   else if (sparse) markup += `<text class="chart-note" x="${left + 12}" y="${top + 20}">继续采样后显示变化曲线</text>`;
-  markup += `<line id="chart-hover-guide" class="chart-hover-guide" x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" visibility="hidden"/>${seriesMeta.map((item) => `<circle id="${item.marker.slice(1)}" class="chart-hover-point point-${item.color}" r="5" visibility="hidden"/>`).join("")}`;
+  markup += `<rect class="chart-hit-area" x="${left}" y="${top}" width="${plotW}" height="${plotH}"/><line id="chart-hover-guide" class="chart-hover-guide" x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" visibility="hidden"/>${seriesMeta.map((item) => `<circle id="${item.marker.slice(1)}" class="chart-hover-point point-${item.color}" r="5" visibility="hidden"/>`).join("")}`;
   svg.innerHTML = markup;
   bindChartInteraction({svg, history, cutoff, chartEnd, rangeMs, width, left, plotW, top, height, bottom, x, y, seriesMeta});
 }
