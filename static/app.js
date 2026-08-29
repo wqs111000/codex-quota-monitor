@@ -1,4 +1,4 @@
-const state = { data: null, rangeHours: 24, chartEndMs: null, chartDragging: false, dragStartX: 0, dragStartEndMs: 0 };
+const state = { data: null, rangeHours: 24, chartEndMs: null, chartDragging: false, chartPointerDown: false, dragMoved: false, dragPointerType: "", dragStartX: 0, dragStartEndMs: 0 };
 const $ = (s) => document.querySelector(s);
 const pct = (v, digits = 1) => v == null || Number.isNaN(Number(v)) ? "—" : `${Number(v).toFixed(digits)}%`;
 const dateText = (v) => v ? new Date(v).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "—";
@@ -83,8 +83,8 @@ function bindChartInteraction(chart) {
   const localX = (event) => { const rect = svg.getBoundingClientRect(); return Math.max(left, Math.min(width - 18, (event.clientX - rect.left) / rect.width * width)); };
   const nearest = (values, time) => values.reduce((best, item) => Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best, values[0]);
   const hideTooltip = () => { tooltip.classList.remove("visible"); ["#chart-hover-guide", "#chart-hover-primary", "#chart-hover-secondary"].forEach((selector) => { const node = svg.querySelector(selector); if (node) node.setAttribute("visibility", "hidden"); }); };
-  const showTooltip = (event) => {
-    if (state.chartDragging || !series.length) return;
+  const showTooltip = (event, allowDuringPointerDown = false) => {
+    if ((state.chartDragging || (state.chartPointerDown && !allowDuringPointerDown)) || !series.length) return;
     const cursorX = localX(event), time = cutoff + ((cursorX - left) / plotW) * rangeMs;
     const selected = series.map((item) => ({...item, point:nearest(item.values, time)}));
     const guide = svg.querySelector("#chart-hover-guide"); guide.setAttribute("x1", cursorX); guide.setAttribute("x2", cursorX); guide.setAttribute("visibility", "visible");
@@ -93,13 +93,15 @@ function bindChartInteraction(chart) {
     const wrap = $(".chart-wrap"), rect = wrap.getBoundingClientRect(); tooltip.style.left = `${Math.min(Math.max(event.clientX - rect.left + 14, 8), rect.width - tooltip.offsetWidth - 8)}px`; tooltip.style.top = `${Math.max(event.clientY - rect.top - tooltip.offsetHeight - 12, 8)}px`; tooltip.classList.add("visible");
   };
   svg.onpointermove = (event) => {
-    if (state.chartDragging) { const currentX = localX(event), deltaMs = ((state.dragStartX - currentX) / plotW) * rangeMs; state.chartEndMs = state.dragStartEndMs + deltaMs; svg.classList.add("dragging"); return; }
-    showTooltip(event);
+    const currentX = localX(event);
+    if (state.chartPointerDown && state.dragPointerType === "touch" && !state.chartDragging && Math.abs(currentX - state.dragStartX) > 10) { state.chartDragging = true; state.dragMoved = true; hideTooltip(); }
+    if (state.chartDragging) { const deltaMs = ((state.dragStartX - currentX) / plotW) * rangeMs; state.chartEndMs = state.dragStartEndMs + deltaMs; svg.classList.add("dragging"); return; }
+    showTooltip(event, state.chartPointerDown && state.dragPointerType === "touch");
   };
-  svg.onpointerdown = (event) => { state.chartDragging = true; state.dragStartX = localX(event); state.dragStartEndMs = chartEnd; svg.setPointerCapture(event.pointerId); hideTooltip(); };
-  svg.onpointerup = (event) => { state.chartDragging = false; svg.releasePointerCapture(event.pointerId); svg.classList.remove("dragging"); renderChart(state.data?.history || []); };
-  svg.onpointercancel = () => { state.chartDragging = false; svg.classList.remove("dragging"); renderChart(state.data?.history || []); };
-  svg.onpointerleave = () => { if (!state.chartDragging) hideTooltip(); };
+  svg.onpointerdown = (event) => { state.chartPointerDown = true; state.dragPointerType = event.pointerType; state.dragMoved = false; state.chartDragging = event.pointerType !== "touch"; state.dragStartX = localX(event); state.dragStartEndMs = chartEnd; svg.setPointerCapture(event.pointerId); if (event.pointerType === "touch") showTooltip(event, true); else hideTooltip(); };
+  svg.onpointerup = (event) => { const wasTouchTap = state.dragPointerType === "touch" && !state.dragMoved && !state.chartDragging; state.chartPointerDown = false; state.chartDragging = false; svg.releasePointerCapture(event.pointerId); svg.classList.remove("dragging"); if (!wasTouchTap) renderChart(state.data?.history || []); };
+  svg.onpointercancel = (event) => { state.chartPointerDown = false; state.chartDragging = false; svg.classList.remove("dragging"); if (event.pointerId != null && svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId); renderChart(state.data?.history || []); };
+  svg.onpointerleave = () => { if (!state.chartDragging && state.dragPointerType !== "touch") hideTooltip(); };
 }
 
 function renderForecast(signal, windows) {
