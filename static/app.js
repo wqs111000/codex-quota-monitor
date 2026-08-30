@@ -15,7 +15,7 @@ const hoursText = (v) => {
 
 async function load(collect = false) {
   try {
-    const response = await fetch(collect ? "/api/collect" : "/api/status", {cache:"no-store"});
+    const response = await fetch(collect ? "api/collect" : "api/status", {cache:"no-store"});
     const payload = await response.json(); state.data = payload.dashboard || payload; render();
   } catch (_) { notice("无法连接本地采集器，请确认 app.py 正在运行。", true); }
 }
@@ -137,7 +137,7 @@ async function saveForecast() {
   const status = $("#forecast-form-status"), resetAt = $("#forecast-reset-at").value, probability = Number($("#forecast-probability").value);
   if (!resetAt || Number.isNaN(probability) || probability < 0 || probability > 100) { status.textContent = "请输入有效时间和 0–100 的概率"; return; }
   status.textContent = "保存中…";
-  const response = await fetch("/api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({forecast_reset_at:new Date(resetAt).toISOString(), probability_24h:probability / 100})});
+  const response = await fetch("api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({forecast_reset_at:new Date(resetAt).toISOString(), probability_24h:probability / 100})});
   const payload = await response.json();
   if (!response.ok) { status.textContent = payload.error || "保存失败"; return; }
   status.textContent = "已保存"; await load();
@@ -145,7 +145,7 @@ async function saveForecast() {
 
 async function clearForecast() {
   const status = $("#forecast-form-status");
-  const response = await fetch("/api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({clear:true})});
+  const response = await fetch("api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({clear:true})});
   const payload = await response.json();
   if (!response.ok) { status.textContent = payload.error || "清除失败"; return; }
   $("#forecast-reset-at").value = ""; $("#forecast-probability").value = ""; status.textContent = "已清除"; await load();

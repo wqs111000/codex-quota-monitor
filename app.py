@@ -10,6 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+STATIC_ROOT = STATIC.resolve()
 DATA = Path(os.environ.get("CHATGPT_QUOTA_DATA_DIR", ROOT / "data"))
 DEVICE = os.environ.get("CHATGPT_QUOTA_DEVICE", "this-mac")
 POLL_SECONDS = int(os.environ.get("CHATGPT_QUOTA_POLL_SECONDS", "300"))
@@ -33,7 +34,7 @@ def auth() -> tuple[str | None, str | None, str]:
             p = subprocess.run([str(security), "find-generic-password", "-s", "Codex Auth", "-w"], capture_output=True, text=True, timeout=5)
             if p.returncode == 0 and p.stdout.strip(): candidates.append((json.loads(p.stdout), "macOS Keychain"))
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError): pass
-    path = Path.home() / ".codex" / "auth.json"
+    path = Path(os.environ.get("CODEX_AUTH_FILE", Path.home() / ".codex" / "auth.json"))
     value = load_json(path)
     if value: candidates.append((value, str(path)))
     for item, source in candidates:
@@ -161,8 +162,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/status": return self.json(payload())
         if self.path == "/api/collect": return self.json({**collect(True), "dashboard": payload()})
-        request_path = self.path.split("?", 1)[0]; path = STATIC / ("index.html" if request_path == "/" else request_path.lstrip("/"))
-        if path.is_file() and STATIC in path.parents:
+        request_path = self.path.split("?", 1)[0]
+        path = (STATIC / ("index.html" if request_path == "/" else request_path.lstrip("/"))).resolve()
+        try:
+            path.relative_to(STATIC_ROOT)
+        except ValueError:
+            self.send_error(404)
+            return
+        if path.is_file():
             data = path.read_bytes(); self.send_response(200); self.send_header("Content-Type", {".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"application/javascript; charset=utf-8"}.get(path.suffix, "application/octet-stream")); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         self.send_error(404)
 

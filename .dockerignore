@@ -1,0 +1,9 @@
+.git
+.gitignore
+data
+build
+menubar
+assets
+__pycache__
+*.py[cod]
+.DS_Store
