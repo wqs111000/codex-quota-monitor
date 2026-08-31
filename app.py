@@ -14,10 +14,13 @@ STATIC_ROOT = STATIC.resolve()
 DATA = Path(os.environ.get("CHATGPT_QUOTA_DATA_DIR", ROOT / "data"))
 DEVICE = os.environ.get("CHATGPT_QUOTA_DEVICE", "this-mac")
 POLL_SECONDS = int(os.environ.get("CHATGPT_QUOTA_POLL_SECONDS", "300"))
+RETRY_SECONDS = max(10, min(POLL_SECONDS, int(os.environ.get("CHATGPT_QUOTA_RETRY_SECONDS", "30"))))
+QUERY_ATTEMPTS = 3
 last_collect = 0.0
 last_attempt_at: str | None = None
 last_success_at: str | None = None
 last_error: str | None = None
+collect_lock = threading.Lock()
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -57,17 +60,37 @@ def query() -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "User-Agent": "codex-cli", "Accept": "application/json"}
     if account: headers["ChatGPT-Account-Id"] = account
     req = urllib.request.Request("https://chatgpt.com/backend-api/wham/usage", headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response: body = json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        msg = "登录态已过期，请重新登录 Codex。" if e.code in (401, 403) else f"额度接口返回 HTTP {e.code}。"
-        return {"ok": False, "captured_at": iso_now(), "error": msg}
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return {"ok": False, "captured_at": iso_now(), "error": "额度接口暂时不可用，请稍后重试。"}
+    body = None
+    failure = "额度接口暂时不可用"
+    for attempt in range(QUERY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response: body = json.loads(response.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                failure = "登录态已过期，请重新登录 Codex。"
+                return {"ok": False, "captured_at": iso_now(), "error": failure}
+            elif e.code == 429:
+                failure = "额度接口限流，请稍后重试。"
+            elif e.code >= 500:
+                failure = f"额度接口暂时不可用（HTTP {e.code}）。"
+            else:
+                failure = f"额度接口返回 HTTP {e.code}。"
+                return {"ok": False, "captured_at": iso_now(), "error": failure}
+        except (urllib.error.URLError, TimeoutError, OSError):
+            failure = "网络或代理连接失败，请稍后重试。"
+        except json.JSONDecodeError:
+            failure = "额度接口返回异常数据，请稍后重试。"
+        if attempt < QUERY_ATTEMPTS - 1: time.sleep(2 ** attempt)
+    if body is None:
+        return {"ok": False, "captured_at": iso_now(), "error": f"{failure}（已自动重试 {QUERY_ATTEMPTS} 次）"}
+    if not isinstance(body, dict) or not isinstance(body.get("rate_limit"), dict):
+        return {"ok": False, "captured_at": iso_now(), "error": "额度接口返回异常数据，请稍后重试。"}
     windows = []
-    for key, w in (body.get("rate_limit") or {}).items():
+    for key, w in body["rate_limit"].items():
         if not isinstance(w, dict) or w.get("used_percent") is None: continue
-        used, seconds = float(w["used_percent"]), int(w.get("limit_window_seconds") or 0)
+        try: used, seconds = float(w["used_percent"]), int(w.get("limit_window_seconds") or 0)
+        except (TypeError, ValueError): continue
         windows.append({"id": key, "name": window_name(seconds), "used_percent": round(used, 3), "remaining_percent": round(max(0, 100 - used), 3), "limit_window_seconds": seconds, "reset_at": unix_iso(w.get("reset_at"))})
     return {"ok": True, "captured_at": iso_now(), "device": DEVICE, "windows": windows}
 
@@ -96,23 +119,31 @@ def latest() -> dict[str, Any] | None:
 
 def collect(force=False) -> dict[str, Any]:
     global last_collect, last_attempt_at, last_success_at, last_error
-    if not force and time.time() - last_collect < POLL_SECONDS: return latest() or {"ok": False, "error": "等待下一次采样。"}
-    last_attempt_at = iso_now()
-    item = query(); last_collect = time.time()
-    if item.get("ok"):
-        last_success_at = item.get("captured_at")
-        last_error = None
-        append(item)
-    else:
-        last_error = item.get("error", "额度采样失败")
-    return item
+    with collect_lock:
+        if not force and time.time() - last_collect < POLL_SECONDS: return latest() or {"ok": False, "error": "等待下一次采样。"}
+        last_attempt_at = iso_now()
+        item = query()
+        if item.get("ok"):
+            last_collect = time.time()
+            last_success_at = item.get("captured_at")
+            last_error = None
+            append(item)
+        else:
+            # Keep the failure visible, but allow the next background pass to recover quickly.
+            last_collect = time.time() - max(0, POLL_SECONDS - RETRY_SECONDS)
+            last_error = item.get("error", "额度采样失败")
+        return item
 
 def background_collector() -> None:
     """Keep sampling even when the dashboard tab is closed."""
+    global last_collect, last_attempt_at, last_error
     while True:
         try: collect()
-        except Exception: pass
-        time.sleep(POLL_SECONDS)
+        except Exception:
+            last_attempt_at = iso_now()
+            last_collect = time.time() - max(0, POLL_SECONDS - RETRY_SECONDS)
+            last_error = "采样器内部异常，请稍后重试。"
+        time.sleep(RETRY_SECONDS if last_error else POLL_SECONDS)
 
 def signal() -> dict[str, Any] | None:
     return load_json(DATA / "signals" / "reset-forecast.json")
