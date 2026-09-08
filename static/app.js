@@ -32,7 +32,7 @@ function render() {
   else $("#notice").classList.add("hidden");
   $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}${d.collector?.stale ? " · STALE" : ""}` : "WAITING FOR SIGNAL";
   $("#data-location").textContent = d.data_dir || "";
-  renderCards(windows); renderChart(d.history || [], windows); renderForecast(d.forecast, windows);
+  renderCards(windows); renderChart(d.history || [], windows, d.poll_seconds); renderForecast(d.forecast, windows);
 }
 
 function renderCards(windows) {
@@ -45,14 +45,29 @@ function renderCards(windows) {
   }).join("");
 }
 
-function renderChart(history, windows = []) {
+function renderChart(history, windows = [], pollSeconds = 300) {
   const svg = $("#chart"), chartEnd = state.chartEndMs || Date.now(), rangeMs = state.rangeHours * 3600 * 1000, cutoff = chartEnd - rangeMs;
   const points = history.filter((item) => { const time = new Date(item.captured_at).getTime(); return time >= cutoff && time <= chartEnd; }), width = 1000, height = 390, left = 48, right = 18, top = 22, bottom = 32, plotW = width - left - right, plotH = height - top - bottom;
   const sourceWindows = windows.length ? windows : (points.at(-1)?.windows || []);
   const seriesMeta = sourceWindows.map((window, index) => ({id:window.id, label:window.name || "额度窗口", color:index % 2 ? "violet" : "cyan", marker:`#chart-hover-${index}`}));
   const legend = $("#chart-legend");
-  if (legend) legend.innerHTML = seriesMeta.map((item) => `<span><i class="legend-dot ${item.color}"></i>${item.label}</span>`).join("");
+  if (legend) legend.innerHTML = `${seriesMeta.map((item) => `<span><i class="legend-dot ${item.color}"></i>${item.label}</span>`).join("")}${seriesMeta.length ? `<span><i class="legend-gap"></i>缺少采样</span>` : ""}`;
   const x = (t) => left + ((t - cutoff) / rangeMs) * plotW, y = (v) => top + (100 - Math.max(0, Math.min(100, v))) / 100 * plotH;
+  const gapThreshold = Math.max(Number(pollSeconds) * 1.5 * 1000, 10 * 60 * 1000);
+  const segmentsFor = (values) => {
+    const segments = [], continuous = [];
+    values.forEach((point, index) => {
+      if (!continuous.length) { continuous.push(point); return; }
+      const previous = values[index - 1];
+      if (point.time - previous.time > gapThreshold) {
+        if (continuous.length > 1) segments.push({values:continuous.splice(0), dashed:false});
+        segments.push({values:[previous, point], dashed:true});
+        continuous.push(point);
+      } else continuous.push(point);
+    });
+    if (continuous.length > 1) segments.push({values:continuous, dashed:false});
+    return segments;
+  };
   const path = (values) => values.map((p, i) => `${i ? "L" : "M"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   let markup = `<defs><linearGradient id="cyanFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#56e0e6"/><stop offset="1" stop-color="#56e0e6" stop-opacity="0"/></linearGradient><linearGradient id="violetFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9d8cff"/><stop offset="1" stop-color="#9d8cff" stop-opacity="0"/></linearGradient></defs>`;
   [0, 25, 50, 75, 100].forEach((v) => { markup += `<line class="grid-line" x1="${left}" x2="${width - right}" y1="${y(v)}" y2="${y(v)}"/><text class="axis-label" x="8" y="${y(v) + 4}">${v}%</text>`; });
@@ -71,8 +86,16 @@ function renderChart(history, windows = []) {
     if (!values.length) return;
     const color = item.color;
     if (values.length < 2) { sparse = true; markup += `<circle class="point-${color}" cx="${x(values[0].time)}" cy="${y(values[0].value)}" r="4"/>`; return; }
-    const line = path(values), area = `${line} L${x(values.at(-1).time)},${y(0)} L${x(values[0].time)},${y(0)} Z`;
-    markup += `<path class="area area-${color}" d="${area}"/><path class="series series-${color}" d="${line}"/>`;
+    const segments = segmentsFor(values);
+    segments.forEach((segment) => {
+      const line = path(segment.values);
+      const dashed = segment.dashed ? " series-gap" : "";
+      if (!segment.dashed) {
+        const area = `${line} L${x(segment.values.at(-1).time)},${y(0)} L${x(segment.values[0].time)},${y(0)} Z`;
+        markup += `<path class="area area-${color}" d="${area}"/>`;
+      }
+      markup += `<path class="series series-${color}${dashed}" d="${line}"/>`;
+    });
   });
   if (!points.length) markup += `<text class="axis-label" x="400" y="190">等待第一次额度采样…</text>`;
   else if (sparse) markup += `<text class="chart-note" x="${left + 12}" y="${top + 20}">继续采样后显示变化曲线</text>`;
@@ -110,8 +133,8 @@ function bindChartInteraction(chart) {
     showTooltip(event, state.chartPointerDown && state.dragPointerType === "touch");
   };
   svg.onpointerdown = (event) => { state.chartPointerDown = true; state.dragPointerType = event.pointerType; state.dragMoved = false; state.chartDragging = event.pointerType !== "touch"; state.dragStartX = localX(event); state.dragStartEndMs = chartEnd; svg.setPointerCapture(event.pointerId); if (event.pointerType === "touch") showTooltip(event, true); else hideTooltip(); };
-  svg.onpointerup = (event) => { const wasTouchTap = state.dragPointerType === "touch" && !state.dragMoved && !state.chartDragging; state.chartPointerDown = false; state.chartDragging = false; svg.releasePointerCapture(event.pointerId); svg.classList.remove("dragging"); if (!wasTouchTap) renderChart(state.data?.history || []); };
-  svg.onpointercancel = (event) => { state.chartPointerDown = false; state.chartDragging = false; svg.classList.remove("dragging"); if (event.pointerId != null && svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId); renderChart(state.data?.history || []); };
+  svg.onpointerup = (event) => { const wasTouchTap = state.dragPointerType === "touch" && !state.dragMoved && !state.chartDragging; state.chartPointerDown = false; state.chartDragging = false; svg.releasePointerCapture(event.pointerId); svg.classList.remove("dragging"); if (!wasTouchTap) renderChart(state.data?.history || [], state.data?.windows || [], state.data?.poll_seconds); };
+  svg.onpointercancel = (event) => { state.chartPointerDown = false; state.chartDragging = false; svg.classList.remove("dragging"); if (event.pointerId != null && svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId); renderChart(state.data?.history || [], state.data?.windows || [], state.data?.poll_seconds); };
   svg.onpointerleave = () => { if (!state.chartDragging && state.dragPointerType !== "touch") hideTooltip(); };
 }
 
@@ -157,7 +180,7 @@ $("#clear-forecast").addEventListener("click", clearForecast);
 document.querySelectorAll("[data-range]").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll("[data-range]").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); state.chartEndMs = null; renderChart(state.data?.history || [], state.data?.windows || []);
+    button.classList.add("active"); state.rangeHours = Number(button.dataset.range); state.chartEndMs = null; renderChart(state.data?.history || [], state.data?.windows || [], state.data?.poll_seconds);
   });
 });
 load(); setInterval(() => load(), 60000);
