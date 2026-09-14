@@ -56,6 +56,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(URL(string: "http://127.0.0.1:5077/")!)
     }
 
+    private func localEnvironment(at root: URL) -> [String: String] {
+        let path = root.appendingPathComponent("notification.env")
+        guard let contents = try? String(contentsOf: path, encoding: .utf8) else { return [:] }
+        return contents.split(whereSeparator: \.isNewline).reduce(into: [String: String]()) { values, line in
+            let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !text.hasPrefix("#"), let separator = text.firstIndex(of: "=") else { return }
+            let key = String(text[..<separator]).trimmingCharacters(in: .whitespaces)
+            var value = String(text[text.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
+            if !key.isEmpty { values[key] = value }
+        }
+    }
+
     @objc private func quit() {
         if let ownedService, ownedService.isRunning { ownedService.terminate() }
         NSApp.terminate(nil)
@@ -87,9 +100,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/python3")
-        process.arguments = [root.appendingPathComponent("app.py").path]
+        process.arguments = [root.appendingPathComponent("app.py").path, "--host", "127.0.0.1"]
         process.currentDirectoryURL = root
-        process.environment = ProcessInfo.processInfo.environment.merging(["CODEX_QUOTA_RUNTIME_ROOT": root.path]) { _, new in new }
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(localEnvironment(at: root)) { _, new in new }
+            .merging(["CODEX_QUOTA_RUNTIME_ROOT": root.path]) { _, new in new }
         do {
             try process.run()
             ownedService = process

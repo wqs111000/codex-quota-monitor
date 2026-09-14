@@ -1,0 +1,8 @@
+{
+  "name": "Codex Quota",
+  "short_name": "Quota",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#070b16",
+  "theme_color": "#070b16"
+}

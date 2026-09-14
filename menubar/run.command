@@ -4,8 +4,16 @@ set -euo pipefail
 ROOT="${CODEX_QUOTA_RUNTIME_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 PYTHON="/opt/homebrew/bin/python3"
 APP="$ROOT/Quota.app/Contents/MacOS/Quota"
+HOST="${CHATGPT_QUOTA_BIND_HOST:-127.0.0.1}"
 
-"$PYTHON" "$ROOT/app.py" >/tmp/codex-quota-service.log 2>&1 &
+# Optional local-only notification settings; never commit this file.
+if [[ -f "$ROOT/notification.env" ]]; then
+  set -a
+  source "$ROOT/notification.env"
+  set +a
+fi
+
+"$PYTHON" "$ROOT/app.py" --host "$HOST" >/tmp/codex-quota-service.log 2>&1 &
 SERVICE_PID=$!
 
 cleanup() {

@@ -36,3 +36,15 @@
 **Observed**: 首次隔离曲线测试的模拟 DOM 未包含页面按钮节点，导致测试脚本在事件绑定阶段报错。
 
 **Resolution**: 补齐通用模拟节点后重跑测试；不修改产品代码来适配测试夹具。
+
+## [ERR-20260914-001] notification-test-fixture
+
+**Observed**: 通知去重测试未预置“用户已开启提醒”的本地偏好，导致测试没有产生通知。
+
+**Resolution**: 在测试中先写入授权偏好后重跑；保持产品默认需用户主动开启通知的安全行为。
+
+## [ERR-20260914-002] launchagent-bootstrap
+
+**Observed**: 更新通知功能后，安装脚本中的 macOS `launchctl bootstrap` 再次返回 `Input/output error`。
+
+**Resolution**: 使用当前用户会话手动加载同一 LaunchAgent 成功，服务和最新静态资源均已正常运行。

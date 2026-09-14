@@ -15,6 +15,8 @@ DATA = Path(os.environ.get("CHATGPT_QUOTA_DATA_DIR", ROOT / "data"))
 DEVICE = os.environ.get("CHATGPT_QUOTA_DEVICE", "this-mac")
 POLL_SECONDS = int(os.environ.get("CHATGPT_QUOTA_POLL_SECONDS", "300"))
 RETRY_SECONDS = max(10, min(POLL_SECONDS, int(os.environ.get("CHATGPT_QUOTA_RETRY_SECONDS", "30"))))
+BARK_SERVER_URL = os.environ.get("CHATGPT_QUOTA_BARK_URL", "https://api.day.app").rstrip("/")
+BARK_KEY = os.environ.get("CHATGPT_QUOTA_BARK_KEY", "").strip().strip("/")
 QUERY_ATTEMPTS = 3
 last_collect = 0.0
 last_attempt_at: str | None = None
@@ -101,6 +103,60 @@ def append(item: dict[str, Any]) -> None:
     path = file_for(); path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f: f.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
 
+def notification_state_path() -> Path:
+    return DATA / "signals" / "bark-state.json"
+
+def send_bark(message: str, title: str = "Codex Quota Reset") -> tuple[bool, str]:
+    """Send a sanitized notification without exposing the ChatGPT OAuth token."""
+    if not BARK_KEY:
+        return False, "未配置 Bark Key"
+    request = urllib.request.Request(
+        f"{BARK_SERVER_URL}/push",
+        data=json.dumps({"device_key": BARK_KEY, "title": title, "body": message, "group": "Codex Quota"}).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return (True, "") if 200 <= response.status < 300 else (False, f"Bark 返回 HTTP {response.status}")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
+        return False, f"Bark 推送失败：{error}"
+
+def notify_resets(previous: dict[str, Any] | None, current: dict[str, Any]) -> None:
+    """Notify once when a quota window resets or jumps back substantially."""
+    if not BARK_KEY or not previous or not previous.get("ok") or not current.get("ok"):
+        return
+    previous_windows = {w.get("id"): w for w in previous.get("windows", []) if w.get("id")}
+    state = load_json(notification_state_path()) or {}
+    notified = set(state.get("notified", []))
+    resets: list[tuple[str, str]] = []
+    for window in current.get("windows", []):
+        window_id, prior = window.get("id"), previous_windows.get(window.get("id"))
+        if not window_id or not prior:
+            continue
+        try:
+            reset_moved = bool(window.get("reset_at") and prior.get("reset_at") and (datetime.fromisoformat(window["reset_at"]) - datetime.fromisoformat(prior["reset_at"])).total_seconds() > 60)
+        except (TypeError, ValueError):
+            reset_moved = False
+        try:
+            quota_jumped = float(window.get("remaining_percent", 0)) > float(prior.get("remaining_percent", 0)) + 20
+        except (TypeError, ValueError):
+            quota_jumped = False
+        if reset_moved or quota_jumped:
+            event_key = f"{window_id}:{window.get('reset_at') or current.get('captured_at')}"
+            if event_key not in notified:
+                resets.append((event_key, f"{window.get('name', '额度窗口')}：{round(float(window.get('remaining_percent', 0)))}%"))
+    if not resets:
+        return
+    body = "额度窗口检测到重置或额度回升\n" + "\n".join(detail for _, detail in resets)
+    ok, error = send_bark(body)
+    if not ok:
+        print(error, flush=True)
+        return
+    notified.update(key for key, _ in resets)
+    notification_state_path().parent.mkdir(parents=True, exist_ok=True)
+    notification_state_path().write_text(json.dumps({"notified": sorted(notified)[-100:]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
 def history() -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=90); root = DATA / "devices"; result = []
     if not root.exists(): return result
@@ -122,12 +178,15 @@ def collect(force=False) -> dict[str, Any]:
     with collect_lock:
         if not force and time.time() - last_collect < POLL_SECONDS: return latest() or {"ok": False, "error": "等待下一次采样。"}
         last_attempt_at = iso_now()
+        previous = latest()
         item = query()
         if item.get("ok"):
             last_collect = time.time()
             last_success_at = item.get("captured_at")
             last_error = None
             append(item)
+            try: notify_resets(previous, item)
+            except Exception as error: print(f"Bark 通知处理失败：{error}", flush=True)
         else:
             # Keep the failure visible, but allow the next background pass to recover quickly.
             last_collect = time.time() - max(0, POLL_SECONDS - RETRY_SECONDS)
@@ -201,10 +260,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         if path.is_file():
-            data = path.read_bytes(); self.send_response(200); self.send_header("Content-Type", {".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"application/javascript; charset=utf-8"}.get(path.suffix, "application/octet-stream")); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data = path.read_bytes(); self.send_response(200); self.send_header("Content-Type", {".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"application/javascript; charset=utf-8", ".webmanifest":"application/manifest+json; charset=utf-8"}.get(path.suffix, "application/octet-stream")); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
         self.send_error(404)
 
     def do_POST(self):
+        if self.path == "/api/notify/test":
+            ok, error = send_bark("额度监控通知链路正常。")
+            self.json({"ok": ok, "error": error} if not ok else {"ok": True}, 200 if ok else 400)
+            return
         if self.path != "/api/forecast":
             self.send_error(404)
             return
