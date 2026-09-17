@@ -82,8 +82,40 @@ CHATGPT_QUOTA_BARK_KEY=你的Bark_Key
 curl -X POST http://127.0.0.1:5077/api/notify/test
 ```
 
-采集器会在成功采样时比较前后额度窗口：检测到重置时间向后移动或剩余额度明显回升后，只发送一次通知，并将去重状态保存在本地 `data/signals/bark-state.json`。通知内容不包含 ChatGPT OAuth Token。
+采集器会在成功采样时比较前后额度窗口：重置时间向后移动超过 60 秒，或剩余额度回升超过 20 个百分点时，先将事件写入本地 `data/signals/bark-state.json` 待发队列，再更新采样历史。独立通知线程负责发送，网页关闭、下一次额度采样没有变化或额度接口暂时失败，都不会取消已经入队的事件。首次采样只建立比较基线，不补推配置 Bark 之前的事件。
+
+失败后按指数退避重试，起始间隔沿用 `CHATGPT_QUOTA_RETRY_SECONDS`（默认 30 秒，受采集器现有上下限约束），最长退避 1 小时；线程按重试检查间隔检查，到期后才会再次投递。待发事件、重试时间和最近 100 个已确认事件都持久化，服务重启后会继续处理，旧版仅有 `notified` 的文件可直接读取。状态文件采用原子替换；如果无法安全保存事件，不会推进对应采样的历史检查点，以便恢复后重新检测，并通过采集器错误状态提示。
+
+只有 HTTP 成功且响应 JSON 的 `code` 为 `200`，才会从待发队列移除事件；自建 Bark 服务也需要返回这一确认格式。推送包含原始采样时间，便于识别延迟到达的提醒。通知正文、历史记录和状态接口均不包含 ChatGPT OAuth Token；状态接口也不返回 Bark Key、服务地址或原始上游错误内容。
+
+### 查看推送状态
+
+`GET /api/status` 的 `notifications.bark` 返回是否配置、待发数量、未确认投递的尝试次数、最近尝试/确认时间、下次重试时间和脱敏错误：
+
+```bash
+curl -s http://127.0.0.1:5077/api/status | python3 -c \
+  'import json,sys; print(json.dumps(json.load(sys.stdin)["notifications"]["bark"], ensure_ascii=False, indent=2))'
+```
+
+`pending_count` 大于 0 表示仍有待处理事件；状态文件无法读取时该值为 `null`，请检查 `last_error`，不要将其当作空队列。`last_success_at` 仅表示 Bark 返回了成功确认，并非手机展示或用户阅读回执。测试接口 `/api/notify/test` 仍是立即尝试一次，不进入自动重试队列，也不会清除真正的重置事件。
+
+### 投递边界
+
+正常收到确认并保存状态后，同一事件不会重复发送。但如果服务端已接收请求、本地却超时，或进程在保存成功状态前退出，重试可能产生重复通知；这里提供的是“至少一次尝试投递”，不是严格的 exactly-once 或手机必达保证。检测仍沿用额度变化启发式，不等于确认官方全局重置。
+
+持续重试需要监控服务保持运行；`--collect` 会尝试一次到期投递并退出，未成功的事件留给后续调用或常驻服务。每个数据目录仅支持一个监控进程；不要让多个实例共享同一个待发状态文件。
 
 ## 安全边界
 
 程序优先读取 macOS Keychain 的 `Codex Auth`，回退读取 `~/.codex/auth.json`。Access Token 只在采集进程内使用，不写入历史文件、前端接口或日志。
+
+## 测试
+
+无需额外安装依赖：
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile app.py tests/test_notifications.py
+```
+
+测试使用临时数据目录、模拟凭据和本机 HTTP 服务，不读取真实 OAuth 登录态，也不会向真实 Bark 设备发送通知。覆盖重置检测、失败补发、重启恢复、指数退避、并发去重、原子写入失败、旧状态兼容、推送状态接口和测试推送接口。

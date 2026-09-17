@@ -2,7 +2,7 @@
 """Local ChatGPT/Codex quota monitor. Uses only the Python standard library."""
 from __future__ import annotations
 
-import argparse, json, os, subprocess, threading, time, urllib.error, urllib.request
+import argparse, json, math, os, subprocess, tempfile, threading, time, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +23,13 @@ last_attempt_at: str | None = None
 last_success_at: str | None = None
 last_error: str | None = None
 collect_lock = threading.Lock()
+notification_lock = threading.Lock()
+notification_wakeup = threading.Event()
+notification_error: str | None = None
+BARK_RETRY_MAX_SECONDS = 3600
+
+class NotificationStateError(RuntimeError):
+    """A sanitized error: never discard an unreadable or unwritable outbox."""
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -106,56 +113,179 @@ def append(item: dict[str, Any]) -> None:
 def notification_state_path() -> Path:
     return DATA / "signals" / "bark-state.json"
 
+def read_notification_state() -> dict[str, Any]:
+    """Read the outbox, including the legacy {notified: [...]} format."""
+    try:
+        state = json.loads(notification_state_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        state = {}
+    except (OSError, ValueError, UnicodeError) as error:
+        raise NotificationStateError("Bark 状态文件无法读取，请检查本地文件。") from error
+    if not isinstance(state, dict):
+        raise NotificationStateError("Bark 状态文件格式无效，请检查本地文件。")
+    notified, pending = state.get("notified", []), state.get("pending", {})
+    attempts = state.get("attempts", 0)
+    if (not isinstance(notified, list) or any(not isinstance(key, str) for key in notified)
+            or not isinstance(pending, dict)
+            or any(not isinstance(event, dict)
+                   or not isinstance(event.get("detail"), str)
+                   or not isinstance(event.get("captured_at"), str) for event in pending.values())
+            or type(attempts) is not int or attempts < 0):
+        raise NotificationStateError("Bark 状态文件格式无效，请检查本地文件。")
+    for key in ("next_retry_at", "last_attempt_at", "last_success_at"):
+        value = state.get(key)
+        if value is not None:
+            try:
+                if not isinstance(value, str) or datetime.fromisoformat(value).tzinfo is None:
+                    raise ValueError
+            except ValueError as error:
+                raise NotificationStateError("Bark 状态文件时间无效，请检查本地文件。") from error
+    return {**state, "notified": notified, "pending": pending, "attempts": attempts}
+
+def save_notification_state(state: dict[str, Any]) -> None:
+    """Replace atomically so a crash cannot leave a partially written JSON file."""
+    global notification_error
+    path = notification_state_path()
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".bark-state-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(state, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        notification_error = None
+    except (OSError, TypeError, ValueError) as error:
+        notification_error = "Bark 待发状态无法保存，请检查数据目录权限和磁盘空间。"
+        raise NotificationStateError(notification_error) from error
+    finally:
+        if temporary is not None:
+            try: temporary.unlink(missing_ok=True)
+            except OSError: pass
+
 def send_bark(message: str, title: str = "Codex Quota Reset") -> tuple[bool, str]:
-    """Send a sanitized notification without exposing the ChatGPT OAuth token."""
+    """Require a positive Bark acknowledgement; never expose raw response/errors."""
     if not BARK_KEY:
         return False, "未配置 Bark Key"
-    request = urllib.request.Request(
-        f"{BARK_SERVER_URL}/push",
-        data=json.dumps({"device_key": BARK_KEY, "title": title, "body": message, "group": "Codex Quota"}).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
     try:
+        request = urllib.request.Request(
+            f"{BARK_SERVER_URL}/push",
+            data=json.dumps({"device_key": BARK_KEY, "title": title, "body": message, "group": "Codex Quota"}).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
         with urllib.request.urlopen(request, timeout=10) as response:
-            return (True, "") if 200 <= response.status < 300 else (False, f"Bark 返回 HTTP {response.status}")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
-        return False, f"Bark 推送失败：{error}"
+            if not 200 <= response.status < 300:
+                return False, f"Bark 返回 HTTP {response.status}"
+            acknowledgement = json.loads(response.read(65536))
+        if not isinstance(acknowledgement, dict) or acknowledgement.get("code") != 200:
+            return False, "Bark 未确认接收通知，请检查推送配置。"
+        return True, ""
+    except urllib.error.HTTPError as error:
+        return False, f"Bark 返回 HTTP {error.code}"
+    except (ValueError, UnicodeError):
+        return False, "Bark 地址或响应格式无效，请检查推送配置。"
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False, "Bark 网络或代理连接失败，稍后自动重试。"
 
 def notify_resets(previous: dict[str, Any] | None, current: dict[str, Any]) -> None:
-    """Notify once when a quota window resets or jumps back substantially."""
+    """Persist detected events before advancing the quota-history checkpoint."""
     if not BARK_KEY or not previous or not previous.get("ok") or not current.get("ok"):
         return
     previous_windows = {w.get("id"): w for w in previous.get("windows", []) if w.get("id")}
-    state = load_json(notification_state_path()) or {}
-    notified = set(state.get("notified", []))
-    resets: list[tuple[str, str]] = []
-    for window in current.get("windows", []):
-        window_id, prior = window.get("id"), previous_windows.get(window.get("id"))
-        if not window_id or not prior:
-            continue
-        try:
-            reset_moved = bool(window.get("reset_at") and prior.get("reset_at") and (datetime.fromisoformat(window["reset_at"]) - datetime.fromisoformat(prior["reset_at"])).total_seconds() > 60)
-        except (TypeError, ValueError):
-            reset_moved = False
-        try:
-            quota_jumped = float(window.get("remaining_percent", 0)) > float(prior.get("remaining_percent", 0)) + 20
-        except (TypeError, ValueError):
-            quota_jumped = False
-        if reset_moved or quota_jumped:
-            event_key = f"{window_id}:{window.get('reset_at') or current.get('captured_at')}"
-            if event_key not in notified:
-                resets.append((event_key, f"{window.get('name', '额度窗口')}：{round(float(window.get('remaining_percent', 0)))}%"))
-    if not resets:
+    with notification_lock:
+        state = read_notification_state()
+        known = set(state["notified"]) | set(state["pending"])
+        changed = False
+        for window in current.get("windows", []):
+            window_id, prior = window.get("id"), previous_windows.get(window.get("id"))
+            if not window_id or not prior:
+                continue
+            try:
+                remaining = float(window.get("remaining_percent", 0))
+                prior_remaining = float(prior.get("remaining_percent", 0))
+                if not math.isfinite(remaining) or not math.isfinite(prior_remaining):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            try:
+                reset_moved = bool(window.get("reset_at") and prior.get("reset_at") and (datetime.fromisoformat(window["reset_at"]) - datetime.fromisoformat(prior["reset_at"])).total_seconds() > 60)
+            except (TypeError, ValueError):
+                reset_moved = False
+            if reset_moved or remaining > prior_remaining + 20:
+                event_key = f"{window_id}:{window.get('reset_at') or current.get('captured_at')}"
+                if event_key not in known:
+                    state["pending"][event_key] = {
+                        "detail": f"{window.get('name', '额度窗口')}：{round(remaining)}%",
+                        "captured_at": current.get("captured_at") or iso_now(),
+                    }
+                    known.add(event_key)
+                    changed = True
+        if changed:
+            save_notification_state(state)
+            notification_wakeup.set()
+
+def deliver_pending_notifications(now: datetime | None = None) -> None:
+    """Retry independently of quota sampling; preserve events until acknowledged."""
+    global notification_error
+    if not BARK_KEY:
         return
-    body = "额度窗口检测到重置或额度回升\n" + "\n".join(detail for _, detail in resets)
-    ok, error = send_bark(body)
-    if not ok:
-        print(error, flush=True)
-        return
-    notified.update(key for key, _ in resets)
-    notification_state_path().parent.mkdir(parents=True, exist_ok=True)
-    notification_state_path().write_text(json.dumps({"notified": sorted(notified)[-100:]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    now = now or datetime.now(timezone.utc)
+    with notification_lock:
+        try:
+            state = read_notification_state()
+            if not state["pending"]:
+                notification_error = None
+                return
+            if state.get("next_retry_at") and now < datetime.fromisoformat(state["next_retry_at"]):
+                return
+            state["attempts"] += 1
+            delay = min(BARK_RETRY_MAX_SECONDS, RETRY_SECONDS * 2 ** min(state["attempts"] - 1, 12))
+            state["last_attempt_at"] = now.isoformat(timespec="seconds")
+            state["next_retry_at"] = (now + timedelta(seconds=delay)).isoformat(timespec="seconds")
+            # Persist the retry checkpoint BEFORE network I/O, including crash recovery.
+            save_notification_state(state)
+            body = "额度窗口检测到重置或额度回升\n" + "\n".join(
+                f"{event['detail']}（采样时间 {event['captured_at']}）" for event in state["pending"].values())
+            ok, error = send_bark(body)
+            state["last_error"] = None if ok else error
+            if ok:
+                state["notified"] = list(dict.fromkeys(state["notified"] + list(state["pending"])))[-100:]
+                state["pending"] = {}
+                state["attempts"] = 0
+                state["next_retry_at"] = None
+                state["last_success_at"] = now.isoformat(timespec="seconds")
+            save_notification_state(state)
+        except NotificationStateError as error:
+            notification_error = str(error)
+
+def notification_status() -> dict[str, Any]:
+    """Only expose delivery health, never keys, server URLs or pending messages."""
+    status = {"enabled": bool(BARK_KEY), "pending_count": None, "attempts": 0,
+              "last_attempt_at": None, "last_success_at": None, "next_retry_at": None,
+              "last_error": notification_error}
+    try:
+        state = read_notification_state()
+        status.update({key: state.get(key) for key in ("last_attempt_at", "last_success_at", "next_retry_at")})
+        status.update(pending_count=len(state["pending"]), attempts=state["attempts"],
+                      last_error=notification_error or state.get("last_error"))
+    except NotificationStateError as error:
+        status["last_error"] = str(error)
+    return status
+
+def background_notifier() -> None:
+    """Restore pending events at startup and retry even if quota collection fails."""
+    global notification_error
+    while True:
+        try:
+            deliver_pending_notifications()
+        except Exception:
+            notification_error = "Bark 通知处理异常，稍后自动重试。"
+        notification_wakeup.wait(RETRY_SECONDS)
+        notification_wakeup.clear()
 
 def history() -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=90); root = DATA / "devices"; result = []
@@ -181,12 +311,17 @@ def collect(force=False) -> dict[str, Any]:
         previous = latest()
         item = query()
         if item.get("ok"):
+            try:
+                notify_resets(previous, item)
+            except NotificationStateError as error:
+                # Do not lose the reset edge by advancing history without a durable event.
+                last_collect = time.time() - max(0, POLL_SECONDS - RETRY_SECONDS)
+                last_error = str(error)
+                return {"ok": False, "captured_at": item.get("captured_at"), "error": last_error}
+            append(item)
             last_collect = time.time()
             last_success_at = item.get("captured_at")
             last_error = None
-            append(item)
-            try: notify_resets(previous, item)
-            except Exception as error: print(f"Bark 通知处理失败：{error}", flush=True)
         else:
             # Keep the failure visible, but allow the next background pass to recover quickly.
             last_collect = time.time() - max(0, POLL_SECONDS - RETRY_SECONDS)
@@ -243,7 +378,7 @@ def payload() -> dict[str, Any]:
     items, last, fc = history(), latest(), signal(); windows = [metrics(w, items, fc) for w in (last or {}).get("windows", [])]
     last_good = last.get("captured_at") if last else None
     stale = bool(last_good and (datetime.now(timezone.utc) - datetime.fromisoformat(last_good)).total_seconds() > POLL_SECONDS * 2.5)
-    return {"latest": last, "windows": windows, "history": items, "forecast": fc, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
+    return {"latest": last, "windows": windows, "history": items, "forecast": fc, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "notifications": {"bark": notification_status()}, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -300,9 +435,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("--host", default="0.0.0.0"); parser.add_argument("--port", type=int, default=5077); parser.add_argument("--collect", action="store_true"); args = parser.parse_args(); DATA.mkdir(parents=True, exist_ok=True)
-    if args.collect: print(json.dumps(collect(True), ensure_ascii=False, indent=2)); return
+    if args.collect:
+        item = collect(True)
+        deliver_pending_notifications()
+        print(json.dumps(item, ensure_ascii=False, indent=2))
+        return
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"ChatGPT quota monitor: http://{args.host}:{args.port}", flush=True)
+    threading.Thread(target=background_notifier, daemon=True, name="bark-notifier").start()
     threading.Thread(target=background_collector, daemon=True, name="quota-collector").start()
     server.serve_forever()
 
