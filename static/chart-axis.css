@@ -1,0 +1,14 @@
+/* HTML labels stay readable instead of shrinking with the SVG viewBox. */
+.chart-time-axis{position:relative;height:54px;margin-top:-10px;font-variant-numeric:tabular-nums}
+.time-axis-tick{position:absolute;top:0;width:0;border-top:6px solid var(--line)}
+.time-axis-tick::before{content:"";position:absolute;top:-6px;left:0;height:6px;border-left:1px solid var(--muted)}
+.time-axis-label{position:absolute;top:3px;left:0;transform:translateX(-50%);display:grid;gap:4px;text-align:center;white-space:nowrap;font-size:12px;line-height:1.25}
+.time-axis-primary{color:var(--text);font-weight:500}
+.time-axis-secondary{color:var(--muted);font-size:11px;min-height:14px}
+.time-axis-major .time-axis-primary,.time-axis-major .time-axis-secondary{color:var(--cyan)}
+.time-grid-major{stroke:var(--cyan);stroke-opacity:.25;stroke-dasharray:3 5}
+.chart-time-caption{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 18px;margin:0 0 10px;padding:8px 0;border-top:1px solid var(--line);font-size:11px;line-height:1.6;color:var(--muted);font-variant-numeric:tabular-nums}
+.chart-time-details{display:flex;flex-wrap:wrap;gap:4px 14px}
+#chart-time-scale{color:var(--text);white-space:nowrap}
+#chart-time-zone{overflow-wrap:anywhere}
+@media(max-width:820px){.chart-time-axis{height:52px}.chart-time-caption{align-items:flex-start;flex-direction:column;gap:3px}.chart-time-details{gap:3px 10px}}

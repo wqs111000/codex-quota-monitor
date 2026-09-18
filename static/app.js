@@ -119,13 +119,12 @@ function renderChart(history, windows = [], pollSeconds = 300) {
   const path = (values) => values.map((p, i) => `${i ? "L" : "M"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   let markup = `<defs><linearGradient id="cyanFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#56e0e6"/><stop offset="1" stop-color="#56e0e6" stop-opacity="0"/></linearGradient><linearGradient id="violetFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9d8cff"/><stop offset="1" stop-color="#9d8cff" stop-opacity="0"/></linearGradient></defs>`;
   [0, 25, 50, 75, 100].forEach((v) => { markup += `<line class="grid-line" x1="${left}" x2="${width - right}" y1="${y(v)}" y2="${y(v)}"/><text class="axis-label" x="8" y="${y(v) + 4}">${v}%</text>`; });
-  for (let i = 0; i <= 4; i += 1) {
-    const tick = cutoff + (rangeMs * i / 4);
-    const label = new Date(tick).toLocaleString("zh-CN", state.rangeHours <= 24 ? {hour:"2-digit", minute:"2-digit"} : {month:"numeric", day:"numeric"});
-    const tickX = left + plotW * i / 4;
-    markup += `<line class="grid-line" x1="${tickX}" x2="${tickX}" y1="${top}" y2="${height - bottom}"/><text class="axis-label x-axis-label" text-anchor="middle" x="${tickX}" y="${height - 8}">${label}</text>`;
-  }
-  markup += `<text class="axis-label" text-anchor="end" x="${width - right}" y="${height - 24}">时间</text>`;
+  const timeAxis = QuotaTimeAxis.build({startMs:cutoff, endMs:chartEnd, plotWidthPx:(svg.getBoundingClientRect().width || width) * plotW / width});
+  timeAxis.ticks.forEach((tick) => {
+    const tickX = x(tick.time);
+    markup += `<line class="grid-line time-grid${tick.major ? " time-grid-major" : ""}" data-time="${tick.time}" x1="${tickX}" x2="${tickX}" y1="${top}" y2="${height - bottom}"/>`;
+  });
+  QuotaTimeAxis.render(timeAxis, {axis:$("#chart-time-axis"), summary:$("#chart-time-summary"), scale:$("#chart-time-scale"), zone:$("#chart-time-zone"), leftRatio:left / width, rightRatio:right / width});
   let sparse = false;
   const plottedValues = new Map();
   seriesMeta.forEach((item) => {
