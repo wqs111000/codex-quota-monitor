@@ -1,4 +1,4 @@
-name: Python tests
+name: Tests
 
 on:
   pull_request:
@@ -24,3 +24,16 @@ jobs:
         run: |
           python -m py_compile app.py tests/test_notifications.py
           python -m unittest discover -s tests -v
+  chart-axis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check JavaScript and calendar axis behavior
+        run: |
+          node --check static/app.js
+          node --check static/chart-axis.js
+          node --test tests/chart_axis.test.js
