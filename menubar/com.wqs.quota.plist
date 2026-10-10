@@ -14,7 +14,7 @@
         <key>CODEX_QUOTA_RUNTIME_ROOT</key>
         <string>/Users/dasheng/Library/Application Support/Quota</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

@@ -16,6 +16,18 @@ python3 app.py --collect
 
 ## macOS 菜单栏
 
+在另一台 Mac 上安装：先安装并登录 Codex（使用需要监控额度的 ChatGPT 账号），安装 Python 3 和 Xcode Command Line Tools，然后克隆公开仓库并运行安装脚本：
+
+```bash
+git clone https://github.com/wqs111000/codex-quota-monitor.git
+cd codex-quota-monitor
+./menubar/install.command
+```
+
+安装脚本会构建 `Quota.app`、复制服务文件并设置登录时自动启动。首次安装后可在菜单栏看到 Quota 图标；本地仪表盘地址是 <http://127.0.0.1:5077>。每台 Mac 的额度历史保存在各自的 `~/Library/Application Support/Quota/data/`，新设备从安装当天开始积累。
+
+若要在新设备接收 Bark 重置提醒，在 iPhone 的 Bark App 中取得 Device Key 后，将 `CHATGPT_QUOTA_BARK_KEY=你的Device_Key` 写入新 Mac 的 `~/Library/Application Support/Quota/notification.env`，再重新打开 Quota。不要复制或分享 `~/.codex/auth.json`、Keychain 登录凭据或旧设备的 Bark 配置文件。
+
 先保持本地服务运行，再构建并启动菜单栏应用：
 
 ```bash

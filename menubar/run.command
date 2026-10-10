@@ -2,9 +2,14 @@
 set -euo pipefail
 
 ROOT="${CODEX_QUOTA_RUNTIME_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PYTHON="/opt/homebrew/bin/python3"
+PYTHON="$(command -v python3 || true)"
 APP="$ROOT/Quota.app/Contents/MacOS/Quota"
 HOST="${CHATGPT_QUOTA_BIND_HOST:-127.0.0.1}"
+
+if [[ -z "$PYTHON" ]]; then
+  print -u2 "Python 3 not found. Install Python 3 and retry."
+  exit 1
+fi
 
 # Optional local-only notification settings; never commit this file.
 if [[ -f "$ROOT/notification.env" ]]; then

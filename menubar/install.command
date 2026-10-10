@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./menubar/build.command
-USER_HOME="/Users/$(id -un)"
+USER_HOME="$HOME"
 AGENT_DIR="$USER_HOME/Library/LaunchAgents"
 AGENT_PATH="$AGENT_DIR/com.wqs.quota.plist"
 RUNTIME_ROOT="$USER_HOME/Library/Application Support/Quota"
@@ -15,6 +15,10 @@ cp menubar/run.command "$RUNTIME_ROOT/run.command"
 chmod +x "$RUNTIME_ROOT/run.command"
 if [[ -d data ]]; then cp -R data/. "$RUNTIME_ROOT/data/"; fi
 cp menubar/com.wqs.quota.plist "$AGENT_PATH"
+# Resolve paths for the account that is installing the app; the plist also
+# serves as a template and must not assume a particular macOS username.
+plutil -replace 'ProgramArguments.1' -string "$RUNTIME_ROOT/run.command" "$AGENT_PATH"
+plutil -replace 'EnvironmentVariables.CODEX_QUOTA_RUNTIME_ROOT' -string "$RUNTIME_ROOT" "$AGENT_PATH"
 launchctl bootout "gui/$(id -u)/com.wqs.quota" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENT_PATH"
 echo "Installed and started $AGENT_PATH"
