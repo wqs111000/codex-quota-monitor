@@ -339,15 +339,6 @@ def background_collector() -> None:
             last_error = "采样器内部异常，请稍后重试。"
         time.sleep(RETRY_SECONDS if last_error else POLL_SECONDS)
 
-def signal() -> dict[str, Any] | None:
-    return load_json(DATA / "signals" / "reset-forecast.json")
-
-def save_signal(value: dict[str, Any]) -> dict[str, Any]:
-    path = DATA / "signals" / "reset-forecast.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return value
-
 def velocity(window_id: str, items: list[dict[str, Any]]) -> float | None:
     values = []
     for item in items[-1000:]:
@@ -357,28 +348,22 @@ def velocity(window_id: str, items: list[dict[str, Any]]) -> float | None:
     hours = (values[-1][0] - values[0][0]).total_seconds() / 3600
     return (values[-1][1] - values[0][1]) / hours if hours > 0 and values[-1][1] >= values[0][1] else None
 
-def metrics(w: dict[str, Any], items: list[dict[str, Any]], forecast: dict[str, Any] | None) -> dict[str, Any]:
+def metrics(w: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
     now = datetime.now(timezone.utc); reset = None
     try: reset = datetime.fromisoformat(w["reset_at"]) if w.get("reset_at") else None
     except ValueError: pass
     length = max(int(w.get("limit_window_seconds") or 1), 1)
     base_remaining = 100.0
     if reset: base_remaining = max(0.0, min(100.0, 100 - ((now - (reset - timedelta(seconds=length))).total_seconds() / length * 100)))
-    probability = 0.0; forecast_status = "无预测信号"
-    if forecast and forecast.get("reset_type") == "global_hard_reset":
-        try:
-            fresh = now - datetime.fromisoformat(forecast["forecast_updated_at"]) <= timedelta(hours=6)
-            if fresh: probability = max(0.0, min(1.0, float(forecast.get("probability_24h", 0)))); forecast_status = f"提前重置概率 {round(probability * 100)}%"
-        except (KeyError, TypeError, ValueError): pass
-    target = max(5.0, base_remaining - probability * min(base_remaining, 40.0)); remaining = float(w.get("remaining_percent", 0))
+    target = base_remaining; remaining = float(w.get("remaining_percent", 0))
     hours = max(0, (reset - now).total_seconds() / 3600) if reset else None; speed = velocity(w["id"], items)
-    return {**w, "recommended_remaining": round(target, 2), "base_target_remaining": round(base_remaining, 2), "pace_gap": round(remaining - target, 2), "hours_to_reset": round(hours, 2) if hours is not None else None, "velocity_per_hour": round(speed, 3) if speed else None, "depletion_hours": round(remaining / speed, 2) if speed and speed > 0 else None, "forecast_status": forecast_status, "recommendation": "可以适度增加使用" if remaining - target > 8 else "按当前节奏使用" if remaining - target > -8 else "建议降低使用强度"}
+    return {**w, "recommended_remaining": round(target, 2), "base_target_remaining": round(base_remaining, 2), "pace_gap": round(remaining - target, 2), "hours_to_reset": round(hours, 2) if hours is not None else None, "velocity_per_hour": round(speed, 3) if speed else None, "depletion_hours": round(remaining / speed, 2) if speed and speed > 0 else None, "recommendation": "可以适度增加使用" if remaining - target > 8 else "按当前节奏使用" if remaining - target > -8 else "建议降低使用强度"}
 
 def payload() -> dict[str, Any]:
-    items, last, fc = history(), latest(), signal(); windows = [metrics(w, items, fc) for w in (last or {}).get("windows", [])]
+    items, last = history(), latest(); windows = [metrics(w, items) for w in (last or {}).get("windows", [])]
     last_good = last.get("captured_at") if last else None
     stale = bool(last_good and (datetime.now(timezone.utc) - datetime.fromisoformat(last_good)).total_seconds() > POLL_SECONDS * 2.5)
-    return {"latest": last, "windows": windows, "history": items, "forecast": fc, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "notifications": {"bark": notification_status()}, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
+    return {"latest": last, "windows": windows, "history": items, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "notifications": {"bark": notification_status()}, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -403,35 +388,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, error = send_bark("额度监控通知链路正常。")
             self.json({"ok": ok, "error": error} if not ok else {"ok": True}, 200 if ok else 400)
             return
-        if self.path != "/api/forecast":
-            self.send_error(404)
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length))
-            if body.get("clear"):
-                path = DATA / "signals" / "reset-forecast.json"
-                try: path.unlink()
-                except FileNotFoundError: pass
-                self.json({"ok": True, "cleared": True})
-                return
-            probability = float(body.get("probability_24h"))
-            reset_at = str(body.get("forecast_reset_at", "")).strip()
-            if not 0 <= probability <= 1:
-                raise ValueError("probability_24h must be between 0 and 1")
-            if not reset_at:
-                raise ValueError("forecast_reset_at is required")
-            datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
-            value = {
-                "reset_type": "global_hard_reset",
-                "probability_24h": probability,
-                "forecast_reset_at": reset_at,
-                "forecast_updated_at": iso_now(),
-                "source": "manual"
-            }
-            self.json(save_signal(value))
-        except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
-            self.json({"error": f"预测输入无效：{error}"}, 400)
+        self.send_error(404)
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("--host", default="0.0.0.0"); parser.add_argument("--port", type=int, default=5077); parser.add_argument("--collect", action="store_true"); args = parser.parse_args(); DATA.mkdir(parents=True, exist_ok=True)

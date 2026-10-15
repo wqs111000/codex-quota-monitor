@@ -80,7 +80,7 @@ function render() {
   else $("#notice").classList.add("hidden");
   $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}${d.collector?.stale ? " · STALE" : ""}` : "WAITING FOR SIGNAL";
   $("#data-location").textContent = d.data_dir || "";
-  renderCards(windows); renderChart(d.history || [], windows, d.poll_seconds); renderForecast(d.forecast, windows);
+  renderCards(windows); renderChart(d.history || [], windows, d.poll_seconds);
 }
 
 function renderCards(windows) {
@@ -88,8 +88,9 @@ function renderCards(windows) {
   if (!windows.length) { el.innerHTML = `<div class="card"><div class="empty">暂无可用额度窗口</div></div>`; return; }
   el.innerHTML = windows.map((w, i) => {
     const color = i === 0 ? "cyan" : "violet", remain = Math.max(0, Math.min(100, Number(w.remaining_percent || 0)));
-    const stateText = w.pace_gap > 8 ? "PACE · ROOM TO USE" : w.pace_gap < -8 ? "PACE · SLOW DOWN" : "PACE · BALANCED";
-    return `<article class="card ${color}-card"><div class="card-title">${w.name || "额度窗口"}<span style="float:right">${stateText}</span></div><div class="card-body"><div><div class="big-number">${Math.round(remain)}<small>%</small></div><div class="card-recommend">推荐剩余 ${pct(w.recommended_remaining)} · ${w.recommendation || "—"}</div></div><div class="ring" style="--ring:${remain * 3.6}deg;--ring-color:var(--${color})"><span>${Math.round(remain)}%</span></div></div><div class="card-meta"><span>重置 ${dateText(w.reset_at)}</span><span>倒计时 ${hoursText(w.hours_to_reset)}</span><span>速度 ${pct(w.velocity_per_hour, 2)}/h</span></div></article>`;
+    const paceClass = w.pace_gap > 8 ? "ahead" : w.pace_gap < -8 ? "behind" : "balanced";
+    const paceText = w.pace_gap > 8 ? "可适度增加使用" : w.pace_gap < -8 ? "建议放缓使用" : "当前节奏合适";
+    return `<article class="card ${color}-card"><div class="quota-card-head"><div class="card-title">${w.name || "额度窗口"}</div><span class="pace-chip ${paceClass}"><i></i>${paceText}</span></div><div class="card-body"><div class="quota-primary"><span class="quota-kicker">当前剩余</span><div class="big-number">${Math.round(remain)}<small>%</small></div><div class="card-recommend">自然周期建议保留 <strong>${pct(w.recommended_remaining)}</strong></div></div><div class="ring" style="--ring:${remain * 3.6}deg;--ring-color:var(--${color})"><span>${Math.round(remain)}%</span></div></div><div class="card-meta"><span><small>重置时间</small><strong>${dateText(w.reset_at)}</strong></span><span><small>剩余时间</small><strong>${hoursText(w.hours_to_reset)}</strong></span><span><small>消耗速度</small><strong>${pct(w.velocity_per_hour, 2)}/h</strong></span></div></article>`;
   }).join("");
 }
 
@@ -246,46 +247,8 @@ function bindChartInteraction(chart) {
   svg.onpointerleave = () => { if (!state.chartDragging && state.dragPointerType !== "touch") hideTooltip(); };
 }
 
-function renderForecast(signal, windows) {
-  const badge = $("#forecast-badge"), content = $("#forecast-content");
-  const resetInput = $("#forecast-reset-at"), probabilityInput = $("#forecast-probability");
-  if (signal) {
-    if (resetInput && signal.forecast_reset_at && document.activeElement !== resetInput) resetInput.value = inputDate(signal.forecast_reset_at);
-    if (probabilityInput && signal.probability_24h != null && document.activeElement !== probabilityInput) probabilityInput.value = Math.round(Number(signal.probability_24h) * 100);
-  }
-  if (!signal) { badge.textContent = "NO SIGNAL"; badge.className = "badge muted"; content.innerHTML = `<div class="metric-line"><span>重置状态</span><strong>按自然周期计算</strong></div><div class="empty">等待重置预测信号；没有信号时按自然重置时间使用。</div>`; return; }
-  const probability = Number(signal.probability_24h || 0) * 100;
-  badge.textContent = `${Math.round(probability)}% / 24H`; badge.className = `badge ${probability >= 60 ? "amber-badge" : "cyan-badge"}`;
-  content.innerHTML = `<div class="metric-line"><span>重置类型</span><strong>${signal.reset_type === "global_hard_reset" ? "全局 Hard Reset" : signal.reset_type === "banked_reset" ? "Banked Reset" : "未明确"}</strong></div><div class="metric-line"><span>未来 24 小时概率</span><strong>${Math.round(probability)}%</strong></div><div class="metric-line"><span>预计重置时间</span><strong>${signal.forecast_reset_at ? dateText(signal.forecast_reset_at) : "—"}</strong></div><div class="callout ${probability >= 60 ? "warn" : ""}">${probability >= 60 ? "预测信号较强，建议适度提前消耗，但保留安全底线。" : "当前没有强重置信号，按自然周期使用更稳妥。"}</div>`;
-}
-
-function inputDate(value) {
-  const date = new Date(value), pad = (n) => String(n).padStart(2, "0");
-  return Number.isNaN(date.getTime()) ? "" : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-async function saveForecast() {
-  const status = $("#forecast-form-status"), resetAt = $("#forecast-reset-at").value, probability = Number($("#forecast-probability").value);
-  if (!resetAt || Number.isNaN(probability) || probability < 0 || probability > 100) { status.textContent = "请输入有效时间和 0–100 的概率"; return; }
-  status.textContent = "保存中…";
-  const response = await fetch("api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({forecast_reset_at:new Date(resetAt).toISOString(), probability_24h:probability / 100})});
-  const payload = await response.json();
-  if (!response.ok) { status.textContent = payload.error || "保存失败"; return; }
-  status.textContent = "已保存"; await load();
-}
-
-async function clearForecast() {
-  const status = $("#forecast-form-status");
-  const response = await fetch("api/forecast", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({clear:true})});
-  const payload = await response.json();
-  if (!response.ok) { status.textContent = payload.error || "清除失败"; return; }
-  $("#forecast-reset-at").value = ""; $("#forecast-probability").value = ""; status.textContent = "已清除"; await load();
-}
-
 $("#refresh").addEventListener("click", () => load(true));
 $("#notify-toggle").addEventListener("click", enableNotifications);
-$("#forecast-form").addEventListener("submit", (event) => { event.preventDefault(); saveForecast(); });
-$("#clear-forecast").addEventListener("click", clearForecast);
 document.querySelectorAll("[data-range]").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll("[data-range]").forEach((item) => item.classList.remove("active"));

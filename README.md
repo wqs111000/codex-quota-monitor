@@ -51,21 +51,6 @@ open build/Quota.app
 CHATGPT_QUOTA_DATA_DIR=/path/to/data python3 app.py
 ```
 
-## 预测信号
-
-仪表盘的“重置预测”面板支持手动输入预计重置时间和未来 24 小时概率，保存后会写入本地 `signals/reset-forecast.json`，并立即影响推荐额度。也可以由外部提醒脚本按同样格式写入：
-
-```json
-{
-  "reset_type": "global_hard_reset",
-  "probability_24h": 0.75,
-  "forecast_reset_at": "2026-08-29T07:30:00.000Z",
-  "forecast_updated_at": "2026-08-26T12:00:00+00:00"
-}
-```
-
-预测信号超过 6 小时会自动失效；清除按钮会删除当前手动预测。
-
 ## 手机重置通知
 
 网页顶部的“开启提醒”会申请浏览器通知权限。仪表盘轮询时，如果检测到额度窗口的重置时间向后跳变或剩余额度明显回升，就会在当前设备发送一次“额度已重置”通知；通知状态和去重快照只保存在浏览器本地。
