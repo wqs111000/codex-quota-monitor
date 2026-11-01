@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from api_monitor import APIMonitor
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -166,7 +167,7 @@ def save_notification_state(state: dict[str, Any]) -> None:
             try: temporary.unlink(missing_ok=True)
             except OSError: pass
 
-def send_bark(message: str, title: str = "Codex Quota Reset") -> tuple[bool, str]:
+def send_bark(message: str, title: str = "Quota 提醒") -> tuple[bool, str]:
     """Require a positive Bark acknowledgement; never expose raw response/errors."""
     if not BARK_KEY:
         return False, "未配置 Bark Key"
@@ -228,6 +229,19 @@ def notify_resets(previous: dict[str, Any] | None, current: dict[str, Any]) -> N
             save_notification_state(state)
             notification_wakeup.set()
 
+def enqueue_api_alert(key: str, detail: str, captured_at: str) -> bool:
+    if not BARK_KEY:
+        return False
+    with notification_lock:
+        state = read_notification_state()
+        if key not in state['pending'] and key not in state['notified']:
+            state['pending'][key] = {'detail': detail, 'captured_at': captured_at}
+            save_notification_state(state)
+            notification_wakeup.set()
+    return True
+
+api_monitor = APIMonitor(DATA, enqueue_api_alert)
+
 def deliver_pending_notifications(now: datetime | None = None) -> None:
     """Retry independently of quota sampling; preserve events until acknowledged."""
     global notification_error
@@ -248,12 +262,15 @@ def deliver_pending_notifications(now: datetime | None = None) -> None:
             state["next_retry_at"] = (now + timedelta(seconds=delay)).isoformat(timespec="seconds")
             # Persist the retry checkpoint BEFORE network I/O, including crash recovery.
             save_notification_state(state)
-            body = "额度窗口检测到重置或额度回升\n" + "\n".join(
+            body = "额度监控提醒\n" + "\n".join(
                 f"{event['detail']}（采样时间 {event['captured_at']}）" for event in state["pending"].values())
             ok, error = send_bark(body)
             state["last_error"] = None if ok else error
             if ok:
-                state["notified"] = list(dict.fromkeys(state["notified"] + list(state["pending"])))[-100:]
+                notified = list(dict.fromkeys(state["notified"] + list(state["pending"])))
+                monthly_cost = sorted(key for key in notified if key.startswith("api-cost:"))[-2:]
+                other = [key for key in notified if not key.startswith("api-cost:")][-100:]
+                state["notified"] = other + monthly_cost
                 state["pending"] = {}
                 state["attempts"] = 0
                 state["next_retry_at"] = None
@@ -363,7 +380,7 @@ def payload() -> dict[str, Any]:
     items, last = history(), latest(); windows = [metrics(w, items) for w in (last or {}).get("windows", [])]
     last_good = last.get("captured_at") if last else None
     stale = bool(last_good and (datetime.now(timezone.utc) - datetime.fromisoformat(last_good)).total_seconds() > POLL_SECONDS * 2.5)
-    return {"latest": last, "windows": windows, "history": items, "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "notifications": {"bark": notification_status()}, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
+    return {"latest": last, "windows": windows, "history": items, "api_monitor": api_monitor.status(), "data_dir": str(DATA), "poll_seconds": POLL_SECONDS, "notifications": {"bark": notification_status()}, "collector": {"last_attempt_at": last_attempt_at, "last_success_at": last_success_at or last_good, "last_error": last_error, "stale": stale}}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -401,6 +418,7 @@ def main():
     print(f"ChatGPT quota monitor: http://{args.host}:{args.port}", flush=True)
     threading.Thread(target=background_notifier, daemon=True, name="bark-notifier").start()
     threading.Thread(target=background_collector, daemon=True, name="quota-collector").start()
+    threading.Thread(target=api_monitor.run, daemon=True, name="openai-api-monitor").start()
     server.serve_forever()
 
 if __name__ == "__main__": main()

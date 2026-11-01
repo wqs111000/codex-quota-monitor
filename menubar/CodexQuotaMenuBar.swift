@@ -4,12 +4,14 @@ import Foundation
 private struct QuotaWindow: Decodable {
     let name: String?
     let remainingPercent: Double?
+    let recommendedRemaining: Double?
     let resetAt: String?
     let hoursToReset: Double?
 
     enum CodingKeys: String, CodingKey {
         case name
         case remainingPercent = "remaining_percent"
+        case recommendedRemaining = "recommended_remaining"
         case resetAt = "reset_at"
         case hoursToReset = "hours_to_reset"
     }
@@ -17,12 +19,44 @@ private struct QuotaWindow: Decodable {
 
 private struct Dashboard: Decodable {
     let windows: [QuotaWindow]
+    let apiMonitor: APIMonitorStatus?
+    enum CodingKeys: String, CodingKey {
+        case windows
+        case apiMonitor = "api_monitor"
+    }
+}
+
+private struct APISample: Decodable {
+    let amount: Double
+    let stale: Bool?
+}
+
+private struct APIMonitorStatus: Decodable {
+    let configured: Bool?
+    let cost: APISample?
+    let details: APIDetails?
+    let costError: String?
+    enum CodingKeys: String, CodingKey {
+        case configured, cost, details
+        case costError = "cost_error"
+    }
+}
+
+private struct APIDetails: Decodable {
+    let today: Double
+    let requestsHour: Int
+    let stale: Bool?
+    enum CodingKeys: String, CodingKey {
+        case today, stale
+        case requestsHour = "requests_hour"
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var windows: [QuotaWindow] = []
+    private var apiMonitor: APIMonitorStatus?
     private var lastSync: Date?
     private var timer: Timer?
     private var ownedService: Process?
@@ -55,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openDashboard() {
         NSWorkspace.shared.open(URL(string: "http://127.0.0.1:5077/")!)
     }
+
 
     private func localEnvironment(at root: URL) -> [String: String] {
         let path = root.appendingPathComponent("notification.env")
@@ -124,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let dashboard = try JSONDecoder().decode(Dashboard.self, from: data)
                 DispatchQueue.main.async {
                     self.windows = dashboard.windows
+                    self.apiMonitor = dashboard.apiMonitor
                     self.lastSync = Date()
                     self.refreshMenu()
                 }
@@ -159,15 +195,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for window in windows {
                 let remaining = window.remainingPercent.map { "\(Int(round($0)))%" } ?? "—"
                 let reset = window.hoursToReset.map(formatDuration) ?? "—"
-                let item = NSMenuItem(title: "\(window.name ?? "额度")    剩余 \(remaining)", action: nil, keyEquivalent: "")
+                let recommendation = window.recommendedRemaining.map { "\(Int(round($0)))%" } ?? "—"
+                let item = NSMenuItem(title: "\(window.name ?? "额度")    剩余 \(remaining) · 建议 \(recommendation)", action: nil, keyEquivalent: "")
                 item.toolTip = "距离重置 \(reset)"
                 menu.addItem(item)
                 let detail = NSMenuItem(title: "    重置倒计时  \(reset)", action: nil, keyEquivalent: "")
                 detail.isEnabled = false
                 menu.addItem(detail)
+                let resetAt = NSMenuItem(title: "    下次重置  \(resetTimeString(window.resetAt))", action: nil, keyEquivalent: "")
+                resetAt.isEnabled = false
+                menu.addItem(resetAt)
             }
         }
 
+        if let monitor = apiMonitor {
+            menu.addItem(.separator())
+            let cost = monitor.cost.map { String(format: "$%.2f", $0.amount) + (($0.stale ?? true) ? "（过期）" : "") } ?? (monitor.configured == true ? "等待采集" : "未配置密钥")
+            let api = NSMenuItem(title: "API 本月花费  \(cost)", action: nil, keyEquivalent: "")
+            api.toolTip = monitor.costError ?? "花费按 UTC 月份统计"
+            api.isEnabled = false
+            menu.addItem(api)
+            if let details = monitor.details {
+                let status = (details.stale ?? true) ? "（过期）" : ""
+                let activity = NSMenuItem(title: "API 今日 $\(String(format: "%.2f", details.today)) · 近1小时 \(details.requestsHour) 次\(status)", action: nil, keyEquivalent: "")
+                activity.toolTip = "今日花费按 UTC 日期统计"
+                activity.isEnabled = false
+                menu.addItem(activity)
+            }
+        }
         menu.addItem(.separator())
         let syncText = lastSync.map { "更新于 \(timeString($0))" } ?? "等待本地服务"
         let sync = NSMenuItem(title: syncText, action: nil, keyEquivalent: "")
@@ -192,6 +247,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func timeString(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func resetTimeString(_ value: String?) -> String {
+        guard let value, let date = ISO8601DateFormatter().date(from: value) else { return "—" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "M月d日 HH:mm"
         return formatter.string(from: date)
     }
 }

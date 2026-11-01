@@ -236,6 +236,15 @@ class NotificationTests(NotificationFixture):
         self.assertEqual(notified[-1], self.key)
         self.assertNotIn("z:0", notified)
 
+    def test_monthly_spend_alert_survives_many_other_notifications(self):
+        month_key = "api-cost:2026-09"
+        app.save_notification_state({"notified": [month_key] + [f"z:{i}" for i in range(100)], "pending": {}})
+        self.queue()
+        app.deliver_pending_notifications(NOW)
+        self.assertIn(month_key, self.state()["notified"])
+        app.enqueue_api_alert(month_key, "monthly cost alert", NOW.isoformat())
+        self.assertNotIn(month_key, self.state()["pending"])
+
     def test_atomic_replace_failure_preserves_existing_file_and_removes_temp(self):
         self.queue()
         before = app.notification_state_path().read_bytes()
@@ -271,7 +280,7 @@ class NotificationTests(NotificationFixture):
                 patch.object(app.threading, "Thread") as thread, redirect_stdout(io.StringIO()):
             app.main()
         targets = {call.kwargs["target"] for call in thread.call_args_list}
-        self.assertEqual(targets, {app.background_notifier, app.background_collector})
+        self.assertEqual(targets, {app.background_notifier, app.background_collector, app.api_monitor.run})
 
     def test_enqueue_write_failure_does_not_advance_history_checkpoint(self):
         app.append(self.previous)

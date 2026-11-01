@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CHATGPT_QUOTA_DATA_DIR=/app/data
 
 WORKDIR /app
-COPY app.py ./app.py
+COPY app.py api_monitor.py ./
 COPY static ./static
 
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app && \

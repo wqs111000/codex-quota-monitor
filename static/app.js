@@ -80,6 +80,12 @@ function render() {
   else $("#notice").classList.add("hidden");
   $("#last-sync").textContent = latest?.captured_at ? `SYNC ${dateText(latest.captured_at)}${d.collector?.stale ? " · STALE" : ""}` : "WAITING FOR SIGNAL";
   $("#data-location").textContent = d.data_dir || "";
+  const api = d.api_monitor || {};
+  const money = (sample) => sample ? `$${Number(sample.amount).toFixed(2)}${sample.stale ? "（数据已过期）" : ""} · 更新于 ${dateText(sample.captured_at)}` : "等待采集";
+  $("#api-monitor").textContent = `本月花费（UTC）：${api.cost ? money(api.cost) : api.configured ? "等待采集" : "未配置管理员密钥"}。提醒阈值：$${api.cost_threshold ?? 90}。${api.cost_error || ""}`;
+  const details = api.details;
+  $("#api-activity").textContent = details ? `今日花费（UTC）：$${Number(details.today).toFixed(2)}；最近约 1 小时请求：${details.requests_hour} 次；提醒阈值：${api.requests_threshold ?? 100} 次。${details.stale ? "数据已过期。" : ""} ${api.detail_error || ""}` : (api.detail_error || "等待用量明细");
+  $("#api-keys").textContent = details ? `本月按 API key 花费：${details.key_costs.length ? details.key_costs.slice(0, 10).map(k => `${k.id} $${Number(k.amount).toFixed(2)}`).join("；") : "暂无数据"}` : "";
   renderCards(windows); renderChart(d.history || [], windows, d.poll_seconds);
 }
 
